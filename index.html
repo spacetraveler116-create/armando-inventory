@@ -311,12 +311,18 @@ function App(){
     return acc;
   }, { revenue: 0, cost: 0, profit: 0, count: 0 });
   const roi = totals.cost > 0 ? round2((totals.profit / totals.cost) * 100) : 0;
+  const avgProfit = totals.count > 0 ? round2(totals.profit / totals.count) : 0;
 
   const connected = itemsConnected && salesConnected;
 
   if (items === null || sales === null || user === undefined) {
     return e("div", { style: { padding: "3rem 0", textAlign: "center", color: "var(--text-secondary)" } }, "Connecting to shared inventory\u2026");
   }
+
+  const statCard = (label, value) => e("div", { style: { background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.65rem 0.75rem" } },
+    e("div", { style: { fontSize: 11, color: "var(--text-secondary)" } }, label),
+    e("div", { style: { fontSize: 18, fontWeight: 600, marginTop: 2 } }, value)
+  );
 
   return e("div", null,
     e("div", { className: "topbar" },
@@ -327,27 +333,21 @@ function App(){
       )
     ),
 
-    e("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
-      e("div", { style: { flex: 1, background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.75rem" } },
-        e("div", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "In stock"),
-        e("div", { style: { fontSize: 22, fontWeight: 600 } }, (items || []).length)
-      ),
-      e("div", { style: { flex: 1, background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.75rem" } },
-        e("div", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Total profit"),
-        e("div", { style: { fontSize: 22, fontWeight: 600 } }, "$" + totals.profit.toLocaleString(undefined, { maximumFractionDigits: 0 }))
-      ),
-      e("div", { style: { flex: 1, background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.75rem" } },
-        e("div", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "ROI"),
-        e("div", { style: { fontSize: 22, fontWeight: 600 } }, roi + "%")
-      )
+    e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 } },
+      statCard("In stock", (items || []).length),
+      statCard("Total revenue", "$" + totals.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 })),
+      statCard("Total cost", "$" + totals.cost.toLocaleString(undefined, { maximumFractionDigits: 0 })),
+      statCard("Total profit", "$" + totals.profit.toLocaleString(undefined, { maximumFractionDigits: 0 })),
+      statCard("ROI", roi + "%"),
+      statCard("Avg profit/sale", "$" + avgProfit.toLocaleString(undefined, { maximumFractionDigits: 0 }))
     ),
 
-    e("div", { style: { display: "flex", gap: 6, marginBottom: 12, borderBottom: "0.5px solid var(--border)" } },
-      [["stock", `Stock (${(items||[]).length})`], ["sales", `Sales (${(sales||[]).length})`], ["log", "Activity"]].map(([key, label]) =>
+    e("div", { style: { display: "flex", gap: 6, marginBottom: 12, borderBottom: "0.5px solid var(--border)", overflowX: "auto" } },
+      [["stock", `Stock (${(items||[]).length})`], ["sales", `Sales (${(sales||[]).length})`], ["reports", "Reports"], ["log", "Activity"]].map(([key, label]) =>
         e("button", {
           key, onClick: () => setTab(key),
           style: {
-            flex: 1, border: "none", background: "transparent", padding: "0.5rem 0", fontSize: 13,
+            flex: "0 0 auto", minWidth: 70, border: "none", background: "transparent", padding: "0.5rem 0.4rem", fontSize: 13,
             fontWeight: tab === key ? 600 : 400, color: tab === key ? "var(--text-primary)" : "var(--text-secondary)",
             borderBottom: tab === key ? "2px solid var(--border-accent)" : "2px solid transparent"
           }
@@ -410,6 +410,8 @@ function App(){
       )
     ),
 
+    tab === "reports" && e(ReportsTab, { sales: sales || [] }),
+
     tab === "log" && e("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
       (log || []).length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No activity yet."),
       [...(log || [])].sort((a,b) => (b.ts||0) - (a.ts||0)).map(entry =>
@@ -460,6 +462,59 @@ function App(){
       onCancel: () => setConfirmDeleteSku(null),
       onConfirm: () => handleDeleteItem(confirmDeleteSku)
     })
+  );
+}
+
+function ReportsTab({ sales }){
+  const [groupBy, setGroupBy] = React.useState("platform");
+
+  const groups = React.useMemo(() => {
+    const map = {};
+    sales.forEach(s => {
+      const key = groupBy === "platform"
+        ? (s.platform || "Unknown")
+        : (s.brand || "Unknown");
+      if (!map[key]) map[key] = { key, count: 0, revenue: 0, cost: 0, profit: 0 };
+      map[key].count += 1;
+      map[key].revenue += Number(s.soldPrice) || 0;
+      map[key].cost += Number(s.cost) || 0;
+      map[key].profit += Number(s.profit) || 0;
+    });
+    return Object.values(map).sort((a, b) => b.profit - a.profit);
+  }, [sales, groupBy]);
+
+  if (sales.length === 0) {
+    return e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No sales yet to report on.");
+  }
+
+  return e("div", null,
+    e("div", { style: { display: "flex", gap: 6, marginBottom: 12 } },
+      e("button", {
+        onClick: () => setGroupBy("platform"),
+        style: { flex: 1, fontSize: 13, borderColor: groupBy === "platform" ? "var(--border-accent)" : undefined, color: groupBy === "platform" ? "var(--text-accent)" : undefined }
+      }, "By platform"),
+      e("button", {
+        onClick: () => setGroupBy("brand"),
+        style: { flex: 1, fontSize: 13, borderColor: groupBy === "brand" ? "var(--border-accent)" : undefined, color: groupBy === "brand" ? "var(--text-accent)" : undefined }
+      }, "By brand")
+    ),
+    e("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+      groups.map(g => {
+        const roi = g.cost > 0 ? round2((g.profit / g.cost) * 100) : 0;
+        return e("div", { key: g.key, style: { background: "var(--surface-2)", border: "0.5px solid var(--border)", borderRadius: 12, padding: "0.75rem 1rem" } },
+          e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 } },
+            e("div", { style: { fontWeight: 600, fontSize: 14 } }, g.key),
+            e("div", { style: { fontSize: 12, color: "var(--text-secondary)" } }, `${g.count} sale${g.count === 1 ? "" : "s"}`)
+          ),
+          e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 4, fontSize: 12 } },
+            e("div", null, e("div", { style: { color: "var(--text-secondary)" } }, "Revenue"), e("div", { style: { fontWeight: 600 } }, "$" + g.revenue.toLocaleString(undefined, { maximumFractionDigits: 0 }))),
+            e("div", null, e("div", { style: { color: "var(--text-secondary)" } }, "Cost"), e("div", { style: { fontWeight: 600 } }, "$" + g.cost.toLocaleString(undefined, { maximumFractionDigits: 0 }))),
+            e("div", null, e("div", { style: { color: "var(--text-secondary)" } }, "Profit"), e("div", { style: { fontWeight: 600, color: g.profit >= 0 ? "var(--text-success)" : "var(--text-danger)" } }, "$" + g.profit.toLocaleString(undefined, { maximumFractionDigits: 0 }))),
+            e("div", null, e("div", { style: { color: "var(--text-secondary)" } }, "ROI"), e("div", { style: { fontWeight: 600 } }, roi + "%"))
+          )
+        );
+      })
+    )
   );
 }
 
