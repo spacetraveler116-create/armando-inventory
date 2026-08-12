@@ -1,0 +1,20 @@
+{
+  "rules": {
+    "items": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "sales": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "changelog": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "$other": {
+      ".read": false,
+      ".write": false
+    }
+  }
+}

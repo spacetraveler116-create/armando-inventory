@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+<title>Armando's Inventory Tracker</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/2.44.0/iconfont/tabler-icons.min.css" />
+<style>
+  :root {
+    --surface-0: #f7f6f3;
+    --surface-1: #f0efe9;
+    --surface-2: #ffffff;
+    --border: #e2e0d8;
+    --border-strong: #cfcdc2;
+    --border-accent: #1f6feb;
+    --border-danger: #d1453b;
+    --text-primary: #1b1b18;
+    --text-secondary: #6b6a63;
+    --text-muted: #9c9a90;
+    --text-accent: #1f6feb;
+    --text-danger: #b3261e;
+    --text-success: #1c7c3d;
+    --bg-danger: #fbe9e7;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--surface-0);
+    color: var(--text-primary);
+  }
+  #root { max-width: 480px; margin: 0 auto; padding: 1rem; padding-bottom: 3rem; }
+  input, select, button {
+    font-family: inherit;
+    font-size: 15px;
+    border-radius: 8px;
+    border: 0.5px solid var(--border-strong);
+    padding: 0.5rem 0.7rem;
+    background: #fff;
+    color: var(--text-primary);
+  }
+  button { cursor: pointer; background: #fff; }
+  button:hover { background: var(--surface-1); }
+  button:active { transform: scale(0.98); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  a { color: var(--text-accent); }
+  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .topbar h1 { font-size: 17px; font-weight: 600; margin: 0; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyA5xQKNk6MJHuSbM3Skf_MfLphUkTgFO_k",
+  authDomain: "armando-inventory.firebaseapp.com",
+  databaseURL: "https://armando-inventory-default-rtdb.firebaseio.com",
+  projectId: "armando-inventory",
+  storageBucket: "armando-inventory.firebasestorage.app",
+  messagingSenderId: "999850321608",
+  appId: "1:999850321608:web:e3b2f4bd2e1b901ad6e7fd"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const auth = firebase.auth();
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+const e = React.createElement;
+
+const RACKS = ["L-Rack16","L-Rack17","L-Rack27","L-Rack38","L-Rack40","L-Rack42","L-Rack43","L-Rack47"];
+const PLATFORMS = ["Facebook Marketplace","Swappa","eBay","Local Pickup","Bundle"];
+const CONDITIONS = ["Excellent","Good – Minor Scratches","Good – Used","Fair – Scratches","Fair – Heavy Scratches","Poor – Broken Back"];
+
+function todayStr(){ const d=new Date(); return d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}); }
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function round2(n){ return Math.round((Number(n)+Number.EPSILON)*100)/100; }
+
+function useAuth(){
+  const [user, setUser] = useState(undefined);
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged(u => {
+      if (u) setUser(u);
+      else auth.signInAnonymously().catch(err => { console.error(err); setUser(null); });
+    });
+    return unsub;
+  }, []);
+  return user;
+}
+
+function useFirebaseList(path){
+  const [data, setData] = useState(null);
+  const [connected, setConnected] = useState(true);
+  useEffect(() => {
+    const ref = db.ref(path);
+    const cb = ref.on("value", snap => {
+      const val = snap.val();
+      setData(val ? Object.values(val) : []);
+      setConnected(true);
+    }, err => { console.error(err); setConnected(false); });
+    return () => ref.off("value", cb);
+  }, [path]);
+  return [data, connected];
+}
+
+function App(){
+  const user = useAuth();
+  const [items, itemsConnected] = useFirebaseList("items");
+  const [sales, salesConnected] = useFirebaseList("sales");
+  const [log] = useFirebaseList("changelog");
+
+  const [tab, setTab] = useState("stock");
+  const [toast, setToast] = useState("");
+  const [search, setSearch] = useState("");
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [sellModalSku, setSellModalSku] = useState(null);
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [detailSku, setDetailSku] = useState(null);
+  const [confirmDeleteSku, setConfirmDeleteSku] = useState(null);
+
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const scanLoopRef = useRef(null);
+  const toastTimer = useRef(null);
+
+  const showToast = useCallback((msg) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(""), 2600);
+  }, []);
+
+  const findItemBySku = useCallback((sku) => (items || []).find(i => i.sku === sku), [items]);
+
+  const addLogEntry = useCallback((entry) => {
+    const id = uid();
+    db.ref("changelog/" + id).set({ id, ts: Date.now(), ...entry }).catch(() => {});
+  }, []);
+
+  const handleAddItem = useCallback(async (item) => {
+    if (!item.sku) { showToast("SKU is required"); return false; }
+    if (findItemBySku(item.sku)) { showToast("SKU already exists in stock"); return false; }
+    const id = uid();
+    try {
+      await db.ref("items/" + id).set({ ...item, id, addedAt: Date.now() });
+      addLogEntry({ type: "add", sku: item.sku, detail: `Added ${item.brand} ${item.model}` });
+      showToast(`Added ${item.model} to inventory`);
+      return true;
+    } catch (err) {
+      showToast("Failed to save — check connection");
+      return false;
+    }
+  }, [findItemBySku, addLogEntry, showToast]);
+
+  const handleDeleteItem = useCallback(async (sku) => {
+    const item = findItemBySku(sku);
+    if (!item) return;
+    try {
+      await db.ref("items/" + item.id).remove();
+      addLogEntry({ type: "delete", sku, detail: "Removed from inventory" });
+      showToast("Item removed");
+      setConfirmDeleteSku(null);
+    } catch (err) {
+      showToast("Failed to remove — check connection");
+    }
+  }, [findItemBySku, addLogEntry, showToast]);
+
+  const handleSellItem = useCallback(async (sku, soldPrice, platform) => {
+    const item = findItemBySku(sku);
+    if (!item) { showToast("Item not found in stock"); return false; }
+    const cost = Number(item.cost) || 0;
+    const price = Number(soldPrice) || 0;
+    const profit = round2(price - cost);
+    const saleId = uid();
+    const saleRecord = {
+      id: saleId, sku: item.sku, rack: item.rack, brand: item.brand, model: item.model,
+      storage: item.storage, color: item.color, carrier: item.carrier, imei: item.imei,
+      condition: item.condition, notes: item.notes, cost, soldPrice: price, profit,
+      date: todayStr(), timestamp: Date.now(), platform: platform || "Facebook Marketplace"
+    };
+    try {
+      const updates = {};
+      updates["sales/" + saleId] = saleRecord;
+      updates["items/" + item.id] = null;
+      await db.ref().update(updates);
+      addLogEntry({ type: "sell", sku, detail: `Sold for $${price} (profit $${profit})` });
+      showToast(`Sold for $${price} — profit $${profit}`);
+      return true;
+    } catch (err) {
+      showToast("Failed to log sale — check connection");
+      return false;
+    }
+  }, [findItemBySku, addLogEntry, showToast]);
+
+  const handleUndoSale = useCallback(async (saleId) => {
+    const sale = (sales || []).find(s => s.id === saleId);
+    if (!sale) return;
+    const newItemId = uid();
+    const restoredItem = {
+      id: newItemId, sku: sale.sku, rack: sale.rack, brand: sale.brand, model: sale.model,
+      storage: sale.storage, color: sale.color, carrier: sale.carrier, imei: sale.imei,
+      condition: sale.condition, notes: sale.notes, cost: sale.cost, addedAt: Date.now()
+    };
+    try {
+      const updates = {};
+      updates["items/" + newItemId] = restoredItem;
+      updates["sales/" + sale.id] = null;
+      await db.ref().update(updates);
+      addLogEntry({ type: "undo", sku: sale.sku, detail: "Sale undone, restored to stock" });
+      showToast("Sale undone — item restored to stock");
+    } catch (err) {
+      showToast("Failed to undo — check connection");
+    }
+  }, [sales, addLogEntry, showToast]);
+
+  const stopScanner = useCallback(() => {
+    if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
+    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+    setScannerOpen(false);
+  }, []);
+
+  const onScanSuccess = useCallback((text) => {
+    const m = text.match(/\b(\d{7,9})\b/);
+    const sku = m ? m[1] : text.trim();
+    stopScanner();
+    const existing = findItemBySku(sku);
+    if (existing) { setSellModalSku(sku); showToast(`Scanned ${sku}`); }
+    else { setDetailSku(sku); showToast(`SKU ${sku} not found in stock`); }
+  }, [stopScanner, findItemBySku, showToast]);
+
+  useEffect(() => {
+    if (!scannerOpen) return;
+    let cancelled = false;
+
+    function tick(){
+      if (cancelled || !videoRef.current || !canvasRef.current) return;
+      const video = videoRef.current, canvas = canvasRef.current;
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.height = video.videoHeight; canvas.width = video.videoWidth;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = window.jsQR(imageData.data, imageData.width, imageData.height);
+        if (code && code.data) { onScanSuccess(code.data); return; }
+      }
+      scanLoopRef.current = requestAnimationFrame(tick);
+    }
+
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+      .then(stream => {
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) { videoRef.current.srcObject = stream; return videoRef.current.play(); }
+      })
+      .then(() => tick())
+      .catch(() => { showToast("Camera unavailable — use manual entry"); setScannerOpen(false); });
+
+    return () => {
+      cancelled = true;
+      if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
+      if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+    };
+  }, [scannerOpen, onScanSuccess, showToast]);
+
+  const filteredItems = (items || []).filter(i => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (i.sku||"").toLowerCase().includes(q) || (i.model||"").toLowerCase().includes(q) ||
+           (i.color||"").toLowerCase().includes(q) || (i.rack||"").toLowerCase().includes(q);
+  });
+
+  const totals = (sales || []).reduce((acc, s) => {
+    acc.revenue += Number(s.soldPrice) || 0;
+    acc.cost += Number(s.cost) || 0;
+    acc.profit += Number(s.profit) || 0;
+    acc.count += 1;
+    return acc;
+  }, { revenue: 0, cost: 0, profit: 0, count: 0 });
+  const roi = totals.cost > 0 ? round2((totals.profit / totals.cost) * 100) : 0;
+
+  const connected = itemsConnected && salesConnected;
+
+  if (items === null || sales === null || user === undefined) {
+    return e("div", { style: { padding: "3rem 0", textAlign: "center", color: "var(--text-secondary)" } }, "Connecting to shared inventory\u2026");
+  }
+
+  return e("div", null,
+    e("div", { className: "topbar" },
+      e("h1", null, "Armando's Inventory"),
+      e("span", { style: { fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center" } },
+        e("span", { className: "status-dot", style: { background: connected ? "#1c7c3d" : "#b3261e" } }),
+        connected ? "Live" : "Offline"
+      )
+    ),
+
+    e("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
+      e("div", { style: { flex: 1, background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.75rem" } },
+        e("div", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "In stock"),
+        e("div", { style: { fontSize: 22, fontWeight: 600 } }, (items || []).length)
+      ),
+      e("div", { style: { flex: 1, background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.75rem" } },
+        e("div", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Total profit"),
+        e("div", { style: { fontSize: 22, fontWeight: 600 } }, "$" + totals.profit.toLocaleString(undefined, { maximumFractionDigits: 0 }))
+      ),
+      e("div", { style: { flex: 1, background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.75rem" } },
+        e("div", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "ROI"),
+        e("div", { style: { fontSize: 22, fontWeight: 600 } }, roi + "%")
+      )
+    ),
+
+    e("div", { style: { display: "flex", gap: 6, marginBottom: 12, borderBottom: "0.5px solid var(--border)" } },
+      [["stock", `Stock (${(items||[]).length})`], ["sales", `Sales (${(sales||[]).length})`], ["log", "Activity"]].map(([key, label]) =>
+        e("button", {
+          key, onClick: () => setTab(key),
+          style: {
+            flex: 1, border: "none", background: "transparent", padding: "0.5rem 0", fontSize: 13,
+            fontWeight: tab === key ? 600 : 400, color: tab === key ? "var(--text-primary)" : "var(--text-secondary)",
+            borderBottom: tab === key ? "2px solid var(--border-accent)" : "2px solid transparent"
+          }
+        }, label)
+      )
+    ),
+
+    e("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
+      e("button", { onClick: () => setScannerOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
+        e("i", { className: "ti ti-qrcode" }), "Scan to sell"),
+      e("button", { onClick: () => setAddModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
+        e("i", { className: "ti ti-plus" }), "Add item")
+    ),
+
+    tab === "stock" && e("div", null,
+      e("input", { type: "text", placeholder: "Search SKU, model, color, rack", value: search, onChange: ev => setSearch(ev.target.value), style: { width: "100%", marginBottom: 10 } }),
+      filteredItems.length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } },
+        search ? "No items match your search." : "No items in stock. Add your first item."),
+      e("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        filteredItems.map(item =>
+          e("div", { key: item.sku, onClick: () => setDetailSku(item.sku), style: { background: "var(--surface-2)", border: "0.5px solid var(--border)", borderRadius: 12, padding: "0.75rem 1rem", cursor: "pointer" } },
+            e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
+              e("div", { style: { minWidth: 0 } },
+                e("div", { style: { fontWeight: 600, fontSize: 14 } }, `${item.brand || ""} ${item.model || ""}`),
+                e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginTop: 2 } }, [item.storage, item.color, item.carrier].filter(Boolean).join(" · ")),
+                e("div", { style: { fontSize: 11, color: "var(--text-muted)", marginTop: 4 } }, `${item.sku} · ${item.rack || "No rack"}`)
+              ),
+              e("div", { style: { textAlign: "right", flexShrink: 0 } },
+                e("div", { style: { fontSize: 15, fontWeight: 600 } }, "$" + Number(item.cost || 0).toLocaleString()),
+                e("div", { style: { fontSize: 11, color: "var(--text-muted)" } }, "cost")
+              )
+            ),
+            e("div", { style: { display: "flex", gap: 6, marginTop: 10 } },
+              e("button", { onClick: ev => { ev.stopPropagation(); setSellModalSku(item.sku); }, style: { flex: 1, fontSize: 13, padding: "0.4rem" } }, "Mark sold"),
+              e("button", { onClick: ev => { ev.stopPropagation(); setConfirmDeleteSku(item.sku); }, "aria-label": "Delete item", style: { width: 36, padding: "0.4rem", display: "flex", alignItems: "center", justifyContent: "center" } },
+                e("i", { className: "ti ti-trash" }))
+            )
+          )
+        )
+      )
+    ),
+
+    tab === "sales" && e("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+      (sales || []).length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No sales logged yet."),
+      [...(sales || [])].sort((a,b) => (b.timestamp||0) - (a.timestamp||0)).map(s =>
+        e("div", { key: s.id, style: { background: "var(--surface-2)", border: "0.5px solid var(--border)", borderRadius: 12, padding: "0.75rem 1rem" } },
+          e("div", { style: { display: "flex", justifyContent: "space-between", gap: 8 } },
+            e("div", { style: { minWidth: 0 } },
+              e("div", { style: { fontWeight: 600, fontSize: 14 } }, `${s.brand || ""} ${s.model || ""}`),
+              e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginTop: 2 } }, `${[s.storage, s.color].filter(Boolean).join(" · ")} · ${s.platform}`),
+              e("div", { style: { fontSize: 11, color: "var(--text-muted)", marginTop: 4 } }, `${s.sku} · ${s.date}`)
+            ),
+            e("div", { style: { textAlign: "right", flexShrink: 0 } },
+              e("div", { style: { fontSize: 15, fontWeight: 600 } }, "$" + Number(s.soldPrice).toLocaleString()),
+              e("div", { style: { fontSize: 12, color: s.profit >= 0 ? "var(--text-success)" : "var(--text-danger)" } }, `${s.profit >= 0 ? "+" : ""}$${s.profit}`)
+            )
+          ),
+          e("button", { onClick: () => handleUndoSale(s.id), style: { marginTop: 8, fontSize: 12, padding: "0.35rem 0.6rem" } }, "Undo sale")
+        )
+      )
+    ),
+
+    tab === "log" && e("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+      (log || []).length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No activity yet."),
+      [...(log || [])].sort((a,b) => (b.ts||0) - (a.ts||0)).map(entry =>
+        e("div", { key: entry.id, style: { fontSize: 13, padding: "0.5rem 0", borderBottom: "0.5px solid var(--border)" } },
+          e("span", { style: { color: "var(--text-secondary)" } }, new Date(entry.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })),
+          " — ", e("span", { style: { fontWeight: 600 } }, entry.sku), `: ${entry.detail}`
+        )
+      )
+    ),
+
+    toast && e("div", { style: { position: "fixed", bottom: 16, left: "50%", transform: "translateX(-50%)", background: "var(--surface-2)", border: "0.5px solid var(--border-strong)", borderRadius: "var(--radius)", padding: "0.6rem 1rem", fontSize: 13, boxShadow: "0 4px 16px rgba(0,0,0,0.12)", zIndex: 50 } }, toast),
+
+    scannerOpen && e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
+      e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1rem", width: "90%", maxWidth: 340 } },
+        e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+          e("span", { style: { fontWeight: 600, fontSize: 14 } }, "Scan QR label"),
+          e("button", { onClick: stopScanner, "aria-label": "Close scanner", style: { width: 32, height: 32, padding: 0 } }, e("i", { className: "ti ti-x" }))
+        ),
+        e("div", { style: { position: "relative", borderRadius: 8, overflow: "hidden", background: "#000" } },
+          e("video", { ref: videoRef, playsInline: true, muted: true, style: { width: "100%", display: "block" } }),
+          e("canvas", { ref: canvasRef, style: { display: "none" } })
+        ),
+        e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginTop: 8, textAlign: "center" } }, "Point at the SKU QR code on the item label")
+      )
+    ),
+
+    sellModalSku && e(SellModal, {
+      item: findItemBySku(sellModalSku),
+      onCancel: () => setSellModalSku(null),
+      onConfirm: async (price, platform) => { const ok = await handleSellItem(sellModalSku, price, platform); if (ok) setSellModalSku(null); }
+    }),
+
+    addModalOpen && e(AddItemModal, {
+      onCancel: () => setAddModalOpen(false),
+      onConfirm: async (item) => { const ok = await handleAddItem(item); if (ok) setAddModalOpen(false); }
+    }),
+
+    detailSku && !sellModalSku && e(DetailModal, {
+      sku: detailSku, item: findItemBySku(detailSku),
+      onClose: () => setDetailSku(null),
+      onSell: () => { setSellModalSku(detailSku); setDetailSku(null); }
+    }),
+
+    confirmDeleteSku && e(ConfirmModal, {
+      title: "Remove this item?",
+      body: `SKU ${confirmDeleteSku} will be removed from stock. This can't be undone.`,
+      confirmLabel: "Remove",
+      onCancel: () => setConfirmDeleteSku(null),
+      onConfirm: () => handleDeleteItem(confirmDeleteSku)
+    })
+  );
+}
+
+function SellModal({ item, onCancel, onConfirm }){
+  const [price, setPrice] = useState("");
+  const [platform, setPlatform] = useState(PLATFORMS[0]);
+  if (!item) return e(ConfirmModal, { title: "SKU not found", body: "This item isn't in current stock.", confirmLabel: "OK", onCancel, onConfirm: onCancel });
+  const cost = Number(item.cost) || 0;
+  const profit = price ? round2(Number(price) - cost) : null;
+  return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
+    e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "90%", maxWidth: 340 } },
+      e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 4 } }, `${item.brand || ""} ${item.model || ""}`),
+      e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 } }, `${[item.storage, item.color].filter(Boolean).join(" · ")} · Cost $${cost}`),
+      e("label", { style: { fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 } }, "Sold price"),
+      e("input", { type: "number", inputMode: "decimal", placeholder: "0.00", value: price, onChange: ev => setPrice(ev.target.value), style: { width: "100%", marginBottom: 10 }, autoFocus: true }),
+      e("label", { style: { fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 } }, "Platform"),
+      e("select", { value: platform, onChange: ev => setPlatform(ev.target.value), style: { width: "100%", marginBottom: 10 } },
+        PLATFORMS.map(p => e("option", { key: p, value: p }, p))
+      ),
+      profit !== null && !isNaN(profit) && e("div", { style: { fontSize: 13, marginBottom: 12, color: profit >= 0 ? "var(--text-success)" : "var(--text-danger)" } }, `Profit: ${profit >= 0 ? "+" : ""}$${profit}`),
+      e("div", { style: { display: "flex", gap: 8 } },
+        e("button", { onClick: onCancel, style: { flex: 1 } }, "Cancel"),
+        e("button", { onClick: () => price && onConfirm(price, platform), disabled: !price, style: { flex: 1, borderColor: "var(--border-accent)", color: price ? "var(--text-accent)" : undefined } }, "Confirm sale")
+      )
+    )
+  );
+}
+
+function AddItemModal({ onCancel, onConfirm }){
+  const [form, setForm] = useState({ sku: "", rack: RACKS[0], brand: "", model: "", storage: "", color: "", carrier: "", imei: "", condition: CONDITIONS[0], cost: "", notes: "" });
+  const set = k => ev => setForm(f => ({ ...f, [k]: ev.target.value }));
+  return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
+    e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "92%", maxWidth: 360, maxHeight: "82vh", overflowY: "auto" } },
+      e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 12 } }, "Add new item"),
+      e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 } },
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "SKU *"), e("input", { value: form.sku, onChange: set("sku"), style: { width: "100%" } })),
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Rack"),
+          e("select", { value: form.rack, onChange: set("rack"), style: { width: "100%" } }, RACKS.map(r => e("option", { key: r, value: r }, r))))
+      ),
+      e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 } },
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Brand"), e("input", { value: form.brand, onChange: set("brand"), style: { width: "100%" } })),
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Model"), e("input", { value: form.model, onChange: set("model"), style: { width: "100%" } }))
+      ),
+      e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 } },
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Storage"), e("input", { value: form.storage, onChange: set("storage"), placeholder: "128GB", style: { width: "100%" } })),
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Color"), e("input", { value: form.color, onChange: set("color"), style: { width: "100%" } }))
+      ),
+      e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 } },
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Carrier"), e("input", { value: form.carrier, onChange: set("carrier"), placeholder: "Unlocked", style: { width: "100%" } })),
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Cost *"), e("input", { type: "number", inputMode: "decimal", value: form.cost, onChange: set("cost"), style: { width: "100%" } }))
+      ),
+      e("div", { style: { marginBottom: 8 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "IMEI"), e("input", { value: form.imei, onChange: set("imei"), style: { width: "100%" } })),
+      e("div", { style: { marginBottom: 8 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Condition"),
+        e("select", { value: form.condition, onChange: set("condition"), style: { width: "100%" } }, CONDITIONS.map(c => e("option", { key: c, value: c }, c)))),
+      e("div", { style: { marginBottom: 14 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Notes"), e("input", { value: form.notes, onChange: set("notes"), placeholder: "Battery %, cycles, etc.", style: { width: "100%" } })),
+      e("div", { style: { display: "flex", gap: 8 } },
+        e("button", { onClick: onCancel, style: { flex: 1 } }, "Cancel"),
+        e("button", { onClick: () => onConfirm(form), disabled: !form.sku || !form.cost, style: { flex: 1, borderColor: "var(--border-accent)", color: form.sku && form.cost ? "var(--text-accent)" : undefined } }, "Add item")
+      )
+    )
+  );
+}
+
+function DetailModal({ sku, item, onClose, onSell }){
+  return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
+    e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "90%", maxWidth: 340 } },
+      !item
+        ? e(React.Fragment, null,
+            e("div", { style: { fontWeight: 600, marginBottom: 8 } }, `SKU ${sku} not found`),
+            e("div", { style: { fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 } }, "This item isn't in current stock. It may already be sold, or hasn't been added yet."),
+            e("button", { onClick: onClose, style: { width: "100%" } }, "Close")
+          )
+        : e(React.Fragment, null,
+            e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 4 } }, `${item.brand || ""} ${item.model || ""}`),
+            e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 } }, item.sku),
+            e("table", { style: { width: "100%", fontSize: 13, marginBottom: 16 } },
+              e("tbody", null,
+                [["Rack", item.rack], ["Storage", item.storage], ["Color", item.color], ["Carrier", item.carrier], ["IMEI", item.imei], ["Condition", item.condition], ["Notes", item.notes], ["Cost", item.cost ? `$${item.cost}` : ""]]
+                  .filter(([, v]) => v)
+                  .map(([k, v]) => e("tr", { key: k },
+                    e("td", { style: { color: "var(--text-secondary)", padding: "4px 0", width: "40%" } }, k),
+                    e("td", { style: { textAlign: "right", padding: "4px 0" } }, v)
+                  ))
+              )
+            ),
+            e("div", { style: { display: "flex", gap: 8 } },
+              e("button", { onClick: onClose, style: { flex: 1 } }, "Close"),
+              e("button", { onClick: onSell, style: { flex: 1, borderColor: "var(--border-accent)", color: "var(--text-accent)" } }, "Mark sold")
+            )
+          )
+    )
+  );
+}
+
+function ConfirmModal({ title, body, confirmLabel, onCancel, onConfirm }){
+  return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
+    e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "88%", maxWidth: 320 } },
+      e("div", { style: { fontWeight: 600, marginBottom: 8 } }, title),
+      e("div", { style: { fontSize: 13, color: "var(--text-secondary)", marginBottom: 16 } }, body),
+      e("div", { style: { display: "flex", gap: 8 } },
+        e("button", { onClick: onCancel, style: { flex: 1 } }, "Cancel"),
+        e("button", { onClick: onConfirm, style: { flex: 1, borderColor: "var(--border-danger)", color: "var(--text-danger)" } }, confirmLabel)
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(e(App));
+</script>
+</body>
+</html>
