@@ -7,47 +7,56 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/2.44.0/iconfont/tabler-icons.min.css" />
 <style>
   :root {
-    --surface-0: #f7f6f3;
-    --surface-1: #f0efe9;
+    --surface-0: #f5f5f7;
+    --surface-1: #ffffff;
     --surface-2: #ffffff;
-    --border: #e2e0d8;
-    --border-strong: #cfcdc2;
-    --border-accent: #1f6feb;
-    --border-danger: #d1453b;
-    --text-primary: #1b1b18;
-    --text-secondary: #6b6a63;
-    --text-muted: #9c9a90;
-    --text-accent: #1f6feb;
-    --text-danger: #b3261e;
-    --text-success: #1c7c3d;
-    --bg-danger: #fbe9e7;
-    --radius: 10px;
+    --border: #e5e5e7;
+    --border-strong: #d2d2d7;
+    --border-accent: #0071e3;
+    --border-danger: #ff3b30;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --text-muted: #86868b;
+    --text-accent: #0071e3;
+    --text-danger: #ff3b30;
+    --text-success: #34c759;
+    --bg-danger: #ffebe9;
+    --radius: 14px;
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { -webkit-font-smoothing: antialiased; }
   body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, sans-serif;
     background: var(--surface-0);
     color: var(--text-primary);
+    letter-spacing: -0.01em;
   }
-  #root { max-width: 480px; margin: 0 auto; padding: 1rem; padding-bottom: 3rem; }
+  #root { max-width: 480px; margin: 0 auto; padding: 1.1rem 1rem; padding-bottom: 3rem; }
   input, select, button {
     font-family: inherit;
     font-size: 15px;
-    border-radius: 8px;
-    border: 0.5px solid var(--border-strong);
-    padding: 0.5rem 0.7rem;
+    border-radius: 10px;
+    border: 1px solid var(--border-strong);
+    padding: 0.55rem 0.75rem;
     background: #fff;
     color: var(--text-primary);
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
   }
-  button { cursor: pointer; background: #fff; }
-  button:hover { background: var(--surface-1); }
-  button:active { transform: scale(0.98); }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  input:focus, select:focus {
+    outline: none;
+    border-color: var(--border-accent);
+    box-shadow: 0 0 0 3px rgba(0,113,227,0.12);
+  }
+  button { cursor: pointer; background: #fff; font-weight: 500; }
+  button:hover { background: var(--surface-0); }
+  button:active { transform: scale(0.97); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
   a { color: var(--text-accent); }
-  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-  .topbar h1 { font-size: 17px; font-weight: 600; margin: 0; }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .topbar h1 { font-size: 20px; font-weight: 700; margin: 0; letter-spacing: -0.02em; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
 </style>
 </head>
 <body>
@@ -313,15 +322,26 @@ function App(){
   const roi = totals.cost > 0 ? round2((totals.profit / totals.cost) * 100) : 0;
   const avgProfit = totals.count > 0 ? round2(totals.profit / totals.count) : 0;
 
+  const inv = (items || []).reduce((acc, i) => {
+    const cost = Number(i.cost) || 0;
+    const sug = Number(i.suggestedPrice) || 0;
+    acc.cost += cost;
+    if (sug > 0) { acc.estValue += sug; acc.priced += 1; }
+    else { acc.estValue += cost; }
+    return acc;
+  }, { cost: 0, estValue: 0, priced: 0 });
+  const inventoryPotentialProfit = round2(inv.estValue - inv.cost);
+
   const connected = itemsConnected && salesConnected;
 
   if (items === null || sales === null || user === undefined) {
     return e("div", { style: { padding: "3rem 0", textAlign: "center", color: "var(--text-secondary)" } }, "Connecting to shared inventory\u2026");
   }
 
-  const statCard = (label, value) => e("div", { style: { background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.65rem 0.75rem" } },
+  const statCard = (label, value, sub) => e("div", { style: { background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.65rem 0.75rem" } },
     e("div", { style: { fontSize: 11, color: "var(--text-secondary)" } }, label),
-    e("div", { style: { fontSize: 18, fontWeight: 600, marginTop: 2 } }, value)
+    e("div", { style: { fontSize: 18, fontWeight: 600, marginTop: 2 } }, value),
+    sub && e("div", { style: { fontSize: 10, color: "var(--text-muted)", marginTop: 1 } }, sub)
   );
 
   return e("div", null,
@@ -339,11 +359,14 @@ function App(){
       statCard("Total cost", "$" + totals.cost.toLocaleString(undefined, { maximumFractionDigits: 0 })),
       statCard("Total profit", "$" + totals.profit.toLocaleString(undefined, { maximumFractionDigits: 0 })),
       statCard("ROI", roi + "%"),
-      statCard("Avg profit/sale", "$" + avgProfit.toLocaleString(undefined, { maximumFractionDigits: 0 }))
+      statCard("Avg profit/sale", "$" + avgProfit.toLocaleString(undefined, { maximumFractionDigits: 0 })),
+      statCard("Inventory cost", "$" + inv.cost.toLocaleString(undefined, { maximumFractionDigits: 0 })),
+      statCard("Est. inventory value", "$" + inv.estValue.toLocaleString(undefined, { maximumFractionDigits: 0 }), inv.priced < (items||[]).length ? `${inv.priced}/${(items||[]).length} priced` : "all priced"),
+      statCard("Potential profit", "$" + inventoryPotentialProfit.toLocaleString(undefined, { maximumFractionDigits: 0 }))
     ),
 
     e("div", { style: { display: "flex", gap: 6, marginBottom: 12, borderBottom: "0.5px solid var(--border)", overflowX: "auto" } },
-      [["stock", `Stock (${(items||[]).length})`], ["sales", `Sales (${(sales||[]).length})`], ["reports", "Reports"], ["log", "Activity"]].map(([key, label]) =>
+      [["stock", `Stock (${(items||[]).length})`], ["sales", `Sales (${(sales||[]).length})`], ["daily", "Daily"], ["reports", "Reports"], ["log", "Activity"]].map(([key, label]) =>
         e("button", {
           key, onClick: () => setTab(key),
           style: {
@@ -367,17 +390,22 @@ function App(){
       filteredItems.length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } },
         search ? "No items match your search." : "No items in stock. Add your first item."),
       e("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
-        filteredItems.map(item =>
-          e("div", { key: item.sku, onClick: () => setDetailSku(item.sku), style: { background: "var(--surface-2)", border: "0.5px solid var(--border)", borderRadius: 12, padding: "0.75rem 1rem", cursor: "pointer" } },
+        filteredItems.map(item => {
+          const daysInStock = item.addedAt ? Math.floor((Date.now() - item.addedAt) / 86400000) : 0;
+          const isAging = daysInStock >= 30;
+          return e("div", { key: item.sku, onClick: () => setDetailSku(item.sku), style: { background: "var(--surface-2)", border: isAging ? "1px solid #d1a441" : "0.5px solid var(--border)", borderRadius: 12, padding: "0.75rem 1rem", cursor: "pointer" } },
             e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
               e("div", { style: { minWidth: 0 } },
                 e("div", { style: { fontWeight: 600, fontSize: 14 } }, `${item.brand || ""} ${item.model || ""}`),
                 e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginTop: 2 } }, [item.storage, item.color, item.carrier].filter(Boolean).join(" · ")),
-                e("div", { style: { fontSize: 11, color: "var(--text-muted)", marginTop: 4 } }, `${item.sku} · ${item.rack || "No rack"}`)
+                e("div", { style: { fontSize: 11, color: "var(--text-muted)", marginTop: 4 } }, `${item.sku} · ${item.rack || "No rack"}`),
+                isAging && e("div", { style: { fontSize: 11, color: "#a3771f", marginTop: 4, display: "flex", alignItems: "center", gap: 4 } },
+                  e("i", { className: "ti ti-clock", style: { fontSize: 12 } }), `${daysInStock} days in stock`)
               ),
               e("div", { style: { textAlign: "right", flexShrink: 0 } },
                 e("div", { style: { fontSize: 15, fontWeight: 600 } }, "$" + Number(item.cost || 0).toLocaleString()),
-                e("div", { style: { fontSize: 11, color: "var(--text-muted)" } }, "cost")
+                e("div", { style: { fontSize: 11, color: "var(--text-muted)" } }, "cost"),
+                item.suggestedPrice && e("div", { style: { fontSize: 12, color: "var(--text-accent)", marginTop: 4 } }, "$" + Number(item.suggestedPrice).toLocaleString() + " asking")
               )
             ),
             e("div", { style: { display: "flex", gap: 6, marginTop: 10 } },
@@ -385,32 +413,16 @@ function App(){
               e("button", { onClick: ev => { ev.stopPropagation(); setConfirmDeleteSku(item.sku); }, "aria-label": "Delete item", style: { width: 36, padding: "0.4rem", display: "flex", alignItems: "center", justifyContent: "center" } },
                 e("i", { className: "ti ti-trash" }))
             )
-          )
-        )
+          );
+        })
       )
     ),
 
-    tab === "sales" && e("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
-      (sales || []).length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No sales logged yet."),
-      [...(sales || [])].sort((a,b) => (b.timestamp||0) - (a.timestamp||0)).map(s =>
-        e("div", { key: s.id, style: { background: "var(--surface-2)", border: "0.5px solid var(--border)", borderRadius: 12, padding: "0.75rem 1rem" } },
-          e("div", { style: { display: "flex", justifyContent: "space-between", gap: 8 } },
-            e("div", { style: { minWidth: 0 } },
-              e("div", { style: { fontWeight: 600, fontSize: 14 } }, `${s.brand || ""} ${s.model || ""}`),
-              e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginTop: 2 } }, `${[s.storage, s.color].filter(Boolean).join(" · ")} · ${s.platform}`),
-              e("div", { style: { fontSize: 11, color: "var(--text-muted)", marginTop: 4 } }, `${s.sku} · ${s.date}`)
-            ),
-            e("div", { style: { textAlign: "right", flexShrink: 0 } },
-              e("div", { style: { fontSize: 15, fontWeight: 600 } }, "$" + Number(s.soldPrice).toLocaleString()),
-              e("div", { style: { fontSize: 12, color: s.profit >= 0 ? "var(--text-success)" : "var(--text-danger)" } }, `${s.profit >= 0 ? "+" : ""}$${s.profit}`)
-            )
-          ),
-          e("button", { onClick: () => handleUndoSale(s.id), style: { marginTop: 8, fontSize: 12, padding: "0.35rem 0.6rem" } }, "Undo sale")
-        )
-      )
-    ),
+    tab === "sales" && e(SalesTab, { sales: sales || [], onUndo: handleUndoSale }),
 
-    tab === "reports" && e(ReportsTab, { sales: sales || [] }),
+    tab === "daily" && e(DailyTab, { sales: sales || [] }),
+
+    tab === "reports" && e(ReportsTab, { sales: sales || [], items: items || [] }),
 
     tab === "log" && e("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
       (log || []).length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No activity yet."),
@@ -465,7 +477,157 @@ function App(){
   );
 }
 
-function ReportsTab({ sales }){
+function downloadCSV(filename, rows, headers){
+  const esc = v => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const lines = [headers.map(esc).join(",")].concat(
+    rows.map(r => headers.map(h => esc(r[h])).join(","))
+  );
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function SalesTab({ sales, onUndo }){
+  const [fromDate, setFromDate] = React.useState("");
+  const [toDate, setToDate] = React.useState("");
+
+  const filtered = React.useMemo(() => {
+    return sales.filter(s => {
+      if (!s.timestamp) return true;
+      const d = new Date(s.timestamp);
+      if (fromDate && d < new Date(fromDate)) return false;
+      if (toDate && d > new Date(new Date(toDate).getTime() + 86400000 - 1)) return false;
+      return true;
+    }).sort((a,b) => (b.timestamp||0) - (a.timestamp||0));
+  }, [sales, fromDate, toDate]);
+
+  const exportCSV = () => {
+    downloadCSV(
+      `sales_export_${new Date().toISOString().slice(0,10)}.csv`,
+      filtered,
+      ["sku","brand","model","storage","color","carrier","condition","cost","soldPrice","profit","platform","date"]
+    );
+  };
+
+  return e("div", null,
+    e("div", { style: { display: "flex", gap: 6, marginBottom: 10, alignItems: "flex-end" } },
+      e("div", { style: { flex: 1 } },
+        e("label", { style: { fontSize: 11, color: "var(--text-secondary)" } }, "From"),
+        e("input", { type: "date", value: fromDate, onChange: ev => setFromDate(ev.target.value), style: { width: "100%" } })
+      ),
+      e("div", { style: { flex: 1 } },
+        e("label", { style: { fontSize: 11, color: "var(--text-secondary)" } }, "To"),
+        e("input", { type: "date", value: toDate, onChange: ev => setToDate(ev.target.value), style: { width: "100%" } })
+      ),
+      e("button", { onClick: exportCSV, title: "Export CSV", style: { padding: "0.5rem 0.6rem", display: "flex", alignItems: "center", gap: 4 } },
+        e("i", { className: "ti ti-download" }))
+    ),
+    filtered.length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No sales in this range."),
+    e("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+      filtered.map(s =>
+        e("div", { key: s.id, style: { background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 14, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", padding: "0.75rem 1rem" } },
+          e("div", { style: { display: "flex", justifyContent: "space-between", gap: 8 } },
+            e("div", { style: { minWidth: 0 } },
+              e("div", { style: { fontWeight: 600, fontSize: 14 } }, `${s.brand || ""} ${s.model || ""}`),
+              e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginTop: 2 } }, `${[s.storage, s.color].filter(Boolean).join(" · ")} · ${s.platform}`),
+              e("div", { style: { fontSize: 11, color: "var(--text-muted)", marginTop: 4 } }, `${s.sku} · ${s.date}`)
+            ),
+            e("div", { style: { textAlign: "right", flexShrink: 0 } },
+              e("div", { style: { fontSize: 15, fontWeight: 600 } }, "$" + Number(s.soldPrice).toLocaleString()),
+              e("div", { style: { fontSize: 12, color: s.profit >= 0 ? "var(--text-success)" : "var(--text-danger)" } }, `${s.profit >= 0 ? "+" : ""}$${s.profit}`)
+            )
+          ),
+          e("button", { onClick: () => onUndo(s.id), style: { marginTop: 8, fontSize: 12, padding: "0.35rem 0.6rem" } }, "Undo sale")
+        )
+      )
+    )
+  );
+}
+
+function DailyTab({ sales }){
+  const [selectedDate, setSelectedDate] = React.useState(new Date().toISOString().slice(0,10));
+
+  const dayKey = ts => new Date(ts).toISOString().slice(0,10);
+
+  const byDay = React.useMemo(() => {
+    const map = {};
+    sales.forEach(s => {
+      if (!s.timestamp) return;
+      const k = dayKey(s.timestamp);
+      if (!map[k]) map[k] = { count: 0, revenue: 0, cost: 0, profit: 0, items: [] };
+      map[k].count += 1;
+      map[k].revenue += Number(s.soldPrice) || 0;
+      map[k].cost += Number(s.cost) || 0;
+      map[k].profit += Number(s.profit) || 0;
+      map[k].items.push(s);
+    });
+    return map;
+  }, [sales]);
+
+  const selected = byDay[selectedDate] || { count: 0, revenue: 0, cost: 0, profit: 0, items: [] };
+
+  const last7 = React.useMemo(() => {
+    const out = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const k = d.toISOString().slice(0,10);
+      out.push({ key: k, label: d.toLocaleDateString(undefined,{weekday:"short"}), profit: (byDay[k]||{profit:0}).profit });
+    }
+    return out;
+  }, [byDay]);
+
+  const maxProfit = Math.max(1, ...last7.map(d => Math.abs(d.profit)));
+
+  return e("div", null,
+    e("div", { style: { marginBottom: 14 } },
+      e("label", { style: { fontSize: 11, color: "var(--text-secondary)" } }, "Select day"),
+      e("input", { type: "date", value: selectedDate, onChange: ev => setSelectedDate(ev.target.value), style: { width: "100%" } })
+    ),
+
+    e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 } },
+      e("div", { style: { background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.65rem 0.75rem" } },
+        e("div", { style: { fontSize: 11, color: "var(--text-secondary)" } }, "Sold"),
+        e("div", { style: { fontSize: 18, fontWeight: 600 } }, selected.count)),
+      e("div", { style: { background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.65rem 0.75rem" } },
+        e("div", { style: { fontSize: 11, color: "var(--text-secondary)" } }, "Revenue"),
+        e("div", { style: { fontSize: 18, fontWeight: 600 } }, "$" + selected.revenue.toLocaleString(undefined,{maximumFractionDigits:0}))),
+      e("div", { style: { background: "var(--surface-1)", borderRadius: "var(--radius)", padding: "0.65rem 0.75rem" } },
+        e("div", { style: { fontSize: 11, color: "var(--text-secondary)" } }, "Profit"),
+        e("div", { style: { fontSize: 18, fontWeight: 600, color: selected.profit >= 0 ? "var(--text-success)" : "var(--text-danger)" } }, "$" + selected.profit.toLocaleString(undefined,{maximumFractionDigits:0})))
+    ),
+
+    e("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 8 } }, "Last 7 days"),
+    e("div", { style: { display: "flex", alignItems: "flex-end", gap: 6, height: 90, marginBottom: 20 } },
+      last7.map(d => {
+        const h = Math.max(4, Math.round((Math.abs(d.profit) / maxProfit) * 70));
+        const isSelected = d.key === selectedDate;
+        return e("div", { key: d.key, onClick: () => setSelectedDate(d.key), style: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", cursor: "pointer" } },
+          e("div", { style: { width: "100%", height: h, borderRadius: 4, background: isSelected ? "var(--border-accent)" : (d.profit >= 0 ? "#a8d5b5" : "#e8b4b0") } }),
+          e("div", { style: { fontSize: 10, color: "var(--text-secondary)", marginTop: 4 } }, d.label)
+        );
+      })
+    ),
+
+    e("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 8 } }, `Sales on ${selectedDate}`),
+    selected.items.length === 0 && e("div", { style: { textAlign: "center", padding: "1.5rem 0", color: "var(--text-secondary)", fontSize: 13 } }, "No sales this day."),
+    e("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+      selected.items.map(s =>
+        e("div", { key: s.id, style: { display: "flex", justifyContent: "space-between", fontSize: 13, padding: "0.4rem 0", borderBottom: "0.5px solid var(--border)" } },
+          e("span", null, `${s.brand || ""} ${s.model || ""}`),
+          e("span", { style: { color: s.profit >= 0 ? "var(--text-success)" : "var(--text-danger)" } }, `$${s.soldPrice} (${s.profit >= 0 ? "+" : ""}$${s.profit})`)
+        )
+      )
+    )
+  );
+}
+
+function ReportsTab({ sales, items }){
   const [groupBy, setGroupBy] = React.useState("platform");
 
   const groups = React.useMemo(() => {
@@ -483,11 +645,32 @@ function ReportsTab({ sales }){
     return Object.values(map).sort((a, b) => b.profit - a.profit);
   }, [sales, groupBy]);
 
-  if (sales.length === 0) {
-    return e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No sales yet to report on.");
-  }
+  const agingItems = React.useMemo(() => {
+    return (items || [])
+      .map(i => ({ ...i, daysInStock: i.addedAt ? Math.floor((Date.now() - i.addedAt) / 86400000) : 0 }))
+      .filter(i => i.daysInStock >= 30)
+      .sort((a, b) => b.daysInStock - a.daysInStock);
+  }, [items]);
 
   return e("div", null,
+    agingItems.length > 0 && e("div", { style: { marginBottom: 20 } },
+      e("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 } },
+        e("i", { className: "ti ti-alert-triangle", style: { color: "#a3771f" } }),
+        `Aging inventory (${agingItems.length} item${agingItems.length === 1 ? "" : "s"} 30+ days)`
+      ),
+      e("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+        agingItems.slice(0, 8).map(i =>
+          e("div", { key: i.sku, style: { display: "flex", justifyContent: "space-between", fontSize: 13, padding: "0.4rem 0.6rem", background: "#fdf6e8", borderRadius: 8 } },
+            e("span", null, `${i.brand || ""} ${i.model || ""} · ${i.sku}`),
+            e("span", { style: { color: "#a3771f", fontWeight: 600 } }, `${i.daysInStock}d`)
+          )
+        )
+      )
+    ),
+
+    sales.length === 0
+      ? e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No sales yet to report on.")
+      : e("div", null,
     e("div", { style: { display: "flex", gap: 6, marginBottom: 12 } },
       e("button", {
         onClick: () => setGroupBy("platform"),
@@ -501,7 +684,7 @@ function ReportsTab({ sales }){
     e("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
       groups.map(g => {
         const roi = g.cost > 0 ? round2((g.profit / g.cost) * 100) : 0;
-        return e("div", { key: g.key, style: { background: "var(--surface-2)", border: "0.5px solid var(--border)", borderRadius: 12, padding: "0.75rem 1rem" } },
+        return e("div", { key: g.key, style: { background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 14, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", padding: "0.75rem 1rem" } },
           e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 } },
             e("div", { style: { fontWeight: 600, fontSize: 14 } }, g.key),
             e("div", { style: { fontSize: 12, color: "var(--text-secondary)" } }, `${g.count} sale${g.count === 1 ? "" : "s"}`)
@@ -515,11 +698,12 @@ function ReportsTab({ sales }){
         );
       })
     )
+  )
   );
 }
 
 function SellModal({ item, onCancel, onConfirm }){
-  const [price, setPrice] = useState("");
+  const [price, setPrice] = useState(item && item.suggestedPrice ? String(item.suggestedPrice) : "");
   const [platform, setPlatform] = useState(PLATFORMS[0]);
   if (!item) return e(ConfirmModal, { title: "SKU not found", body: "This item isn't in current stock.", confirmLabel: "OK", onCancel, onConfirm: onCancel });
   const cost = Number(item.cost) || 0;
@@ -544,7 +728,7 @@ function SellModal({ item, onCancel, onConfirm }){
 }
 
 function AddItemModal({ onCancel, onConfirm }){
-  const [form, setForm] = useState({ sku: "", rack: RACKS[0], brand: "", model: "", storage: "", color: "", carrier: "", imei: "", condition: CONDITIONS[0], cost: "", notes: "" });
+  const [form, setForm] = useState({ sku: "", rack: RACKS[0], brand: "", model: "", storage: "", color: "", carrier: "", imei: "", condition: CONDITIONS[0], cost: "", suggestedPrice: "", notes: "" });
   const set = k => ev => setForm(f => ({ ...f, [k]: ev.target.value }));
   return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
     e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "92%", maxWidth: 360, maxHeight: "82vh", overflowY: "auto" } },
@@ -566,6 +750,7 @@ function AddItemModal({ onCancel, onConfirm }){
         e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Carrier"), e("input", { value: form.carrier, onChange: set("carrier"), placeholder: "Unlocked", style: { width: "100%" } })),
         e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Cost *"), e("input", { type: "number", inputMode: "decimal", value: form.cost, onChange: set("cost"), style: { width: "100%" } }))
       ),
+      e("div", { style: { marginBottom: 8 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Suggested resell price"), e("input", { type: "number", inputMode: "decimal", value: form.suggestedPrice, onChange: set("suggestedPrice"), placeholder: "Optional — used for inventory value estimate", style: { width: "100%" } })),
       e("div", { style: { marginBottom: 8 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "IMEI"), e("input", { value: form.imei, onChange: set("imei"), style: { width: "100%" } })),
       e("div", { style: { marginBottom: 8 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Condition"),
         e("select", { value: form.condition, onChange: set("condition"), style: { width: "100%" } }, CONDITIONS.map(c => e("option", { key: c, value: c }, c)))),
@@ -592,7 +777,7 @@ function DetailModal({ sku, item, onClose, onSell }){
             e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 } }, item.sku),
             e("table", { style: { width: "100%", fontSize: 13, marginBottom: 16 } },
               e("tbody", null,
-                [["Rack", item.rack], ["Storage", item.storage], ["Color", item.color], ["Carrier", item.carrier], ["IMEI", item.imei], ["Condition", item.condition], ["Notes", item.notes], ["Cost", item.cost ? `$${item.cost}` : ""]]
+                [["Rack", item.rack], ["Storage", item.storage], ["Color", item.color], ["Carrier", item.carrier], ["IMEI", item.imei], ["Condition", item.condition], ["Notes", item.notes], ["Cost", item.cost ? `$${item.cost}` : ""], ["Suggested price", item.suggestedPrice ? `$${item.suggestedPrice}` : "Not set"], ["Potential profit", item.suggestedPrice && item.cost ? `$${round2(Number(item.suggestedPrice) - Number(item.cost))}` : ""]]
                   .filter(([, v]) => v)
                   .map(([k, v]) => e("tr", { key: k },
                     e("td", { style: { color: "var(--text-secondary)", padding: "4px 0", width: "40%" } }, k),
