@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -556,10 +557,18 @@ function SalesTab({ sales, onUndo }){
   );
 }
 
-function DailyTab({ sales }){
-  const [selectedDate, setSelectedDate] = React.useState(new Date().toISOString().slice(0,10));
+function localDayKey(d){
+  const dt = (d instanceof Date) ? d : new Date(d);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
-  const dayKey = ts => new Date(ts).toISOString().slice(0,10);
+function DailyTab({ sales }){
+  const [selectedDate, setSelectedDate] = React.useState(localDayKey(new Date()));
+
+  const dayKey = ts => localDayKey(new Date(ts));
 
   const byDay = React.useMemo(() => {
     const map = {};
@@ -582,7 +591,7 @@ function DailyTab({ sales }){
     const out = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(); d.setDate(d.getDate() - i);
-      const k = d.toISOString().slice(0,10);
+      const k = localDayKey(d);
       out.push({ key: k, label: d.toLocaleDateString(undefined,{weekday:"short"}), profit: (byDay[k]||{profit:0}).profit });
     }
     return out;
