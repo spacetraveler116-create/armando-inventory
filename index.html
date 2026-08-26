@@ -144,6 +144,7 @@ function App(){
   const [scannerOpen, setScannerOpen] = useState(false);
   const [sellModalSku, setSellModalSku] = useState(null);
   const [addModalOpen, setAddModalOpen] = useState(false);
+  const [bulkAddModalOpen, setBulkAddModalOpen] = useState(false);
   const [detailSku, setDetailSku] = useState(null);
   const [confirmDeleteSku, setConfirmDeleteSku] = useState(null);
 
@@ -180,6 +181,42 @@ function App(){
       return false;
     }
   }, [findItemBySku, addLogEntry, showToast]);
+
+  const handleBulkAddItems = useCallback(async (parsedItems) => {
+    const toAdd = [];
+    const skipped = [];
+    const seenInBatch = new Set();
+    parsedItems.forEach(item => {
+      if (!item.sku || !item.cost) { skipped.push({ ...item, reason: "missing SKU or cost" }); return; }
+      if (findItemBySku(item.sku)) { skipped.push({ ...item, reason: "SKU already in stock" }); return; }
+      if (seenInBatch.has(item.sku)) { skipped.push({ ...item, reason: "duplicate in pasted list" }); return; }
+      seenInBatch.add(item.sku);
+      toAdd.push(item);
+    });
+
+    if (toAdd.length === 0) {
+      showToast(skipped.length ? `Nothing added — ${skipped.length} skipped` : "No valid rows to add");
+      return { added: 0, skipped };
+    }
+
+    const now = Date.now();
+    const updates = {};
+    toAdd.forEach(item => {
+      const id = uid();
+      updates["items/" + id] = { ...item, id, addedAt: now };
+      const logId = uid();
+      updates["changelog/" + logId] = { id: logId, ts: now, type: "add", sku: item.sku, detail: `Added ${item.brand} ${item.model} (bulk)` };
+    });
+
+    try {
+      await db.ref().update(updates);
+      showToast(`Added ${toAdd.length} item${toAdd.length === 1 ? "" : "s"}${skipped.length ? `, skipped ${skipped.length}` : ""}`);
+      return { added: toAdd.length, skipped };
+    } catch (err) {
+      showToast("Failed to save — check connection");
+      return { added: 0, skipped: parsedItems.map(i => ({ ...i, reason: "save failed" })) };
+    }
+  }, [findItemBySku, showToast]);
 
   const handleDeleteItem = useCallback(async (sku) => {
     const item = findItemBySku(sku);
@@ -389,7 +426,9 @@ function App(){
       e("button", { onClick: () => setScannerOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
         e("i", { className: "ti ti-qrcode" }), "Scan to sell"),
       e("button", { onClick: () => setAddModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
-        e("i", { className: "ti ti-plus" }), "Add item")
+        e("i", { className: "ti ti-plus" }), "Add item"),
+      e("button", { onClick: () => setBulkAddModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
+        e("i", { className: "ti ti-stack-2" }), "Bulk add")
     ),
 
     tab === "stock" && e("div", null,
@@ -466,6 +505,11 @@ function App(){
     addModalOpen && e(AddItemModal, {
       onCancel: () => setAddModalOpen(false),
       onConfirm: async (item) => { const ok = await handleAddItem(item); if (ok) setAddModalOpen(false); }
+    }),
+
+    bulkAddModalOpen && e(BulkAddModal, {
+      onCancel: () => setBulkAddModalOpen(false),
+      onConfirm: async (parsedItems) => { const result = await handleBulkAddItems(parsedItems); if (result.added > 0 && result.skipped.length === 0) setBulkAddModalOpen(false); return result; }
     }),
 
     detailSku && !sellModalSku && e(DetailModal, {
@@ -812,6 +856,72 @@ function AddItemModal({ onCancel, onConfirm }){
       e("div", { style: { display: "flex", gap: 8 } },
         e("button", { onClick: onCancel, style: { flex: 1 } }, "Cancel"),
         e("button", { onClick: () => onConfirm(form), disabled: !form.sku || !form.cost, style: { flex: 1, borderColor: "var(--border-accent)", color: form.sku && form.cost ? "var(--text-accent)" : undefined } }, "Add item")
+      )
+    )
+  );
+}
+
+const BULK_ADD_FIELDS = ["sku","rack","brand","model","storage","color","carrier","imei","condition","cost","suggestedPrice","notes"];
+const BULK_ADD_TEMPLATE = "SKU\tRack\tBrand\tModel\tStorage\tColor\tCarrier\tIMEI\tCondition\tCost\tSuggested Price\tNotes";
+
+function parseBulkRows(text){
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  return lines
+    .filter(line => !/^sku[\t,]/i.test(line))
+    .map(line => {
+      const parts = line.includes("\t") ? line.split("\t") : line.split(",");
+      const row = {};
+      BULK_ADD_FIELDS.forEach((field, idx) => { row[field] = (parts[idx] || "").trim(); });
+      return row;
+    });
+}
+
+function BulkAddModal({ onCancel, onConfirm }){
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const parsed = React.useMemo(() => parseBulkRows(text), [text]);
+  const validCount = parsed.filter(r => r.sku && r.cost).length;
+  const invalidCount = parsed.length - validCount;
+
+  const handleConfirm = async () => {
+    setBusy(true);
+    const res = await onConfirm(parsed.filter(r => r.sku && r.cost));
+    setBusy(false);
+    setResult(res);
+  };
+
+  return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
+    e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "92%", maxWidth: 460, maxHeight: "86vh", overflowY: "auto" } },
+      e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 6 } }, "Bulk add from invoice"),
+      e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 } },
+        "Paste rows copied from a spreadsheet (tab-separated) or comma-separated — one item per line. Columns: SKU, Rack, Brand, Model, Storage, Color, Carrier, IMEI, Condition, Cost, Suggested Price, Notes. SKU and Cost are required; everything else is optional."
+      ),
+      e("textarea", {
+        value: text,
+        onChange: ev => setText(ev.target.value),
+        placeholder: BULK_ADD_TEMPLATE + "\n40099999\tL-Rack47\tApple\tiPhone 14 Pro Max\t256GB\tSilver\tUnlocked\t355822269999999\tGood – Minor Scratches\t310\t480\tBattery 88%",
+        rows: 8,
+        style: { width: "100%", fontSize: 12, fontFamily: "monospace", marginBottom: 8, padding: 8 }
+      }),
+      text.length > 0 && e("div", { style: { fontSize: 12, marginBottom: 10, color: invalidCount > 0 ? "#a3771f" : "var(--text-secondary)" } },
+        `${validCount} item${validCount === 1 ? "" : "s"} ready to add` + (invalidCount > 0 ? ` · ${invalidCount} skipped (missing SKU or cost)` : "")
+      ),
+      result && e("div", { style: { fontSize: 12, marginBottom: 10, padding: 8, borderRadius: 8, background: "var(--surface-1)" } },
+        e("div", { style: { fontWeight: 600, marginBottom: 4 } }, `Added ${result.added} item${result.added === 1 ? "" : "s"}`),
+        result.skipped.length > 0 && e("div", null,
+          `Skipped ${result.skipped.length}:`,
+          result.skipped.slice(0, 10).map((s, idx) => e("div", { key: idx, style: { color: "var(--text-secondary)" } }, `${s.sku || "(no SKU)"} — ${s.reason}`))
+        )
+      ),
+      e("div", { style: { display: "flex", gap: 8 } },
+        e("button", { onClick: onCancel, style: { flex: 1 } }, result ? "Close" : "Cancel"),
+        !result && e("button", {
+          onClick: handleConfirm,
+          disabled: validCount === 0 || busy,
+          style: { flex: 1, borderColor: "var(--border-accent)", color: validCount > 0 && !busy ? "var(--text-accent)" : undefined }
+        }, busy ? "Adding…" : `Add ${validCount || ""} item${validCount === 1 ? "" : "s"}`)
       )
     )
   );
