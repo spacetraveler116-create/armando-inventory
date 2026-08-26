@@ -145,6 +145,7 @@ function App(){
   const [sellModalSku, setSellModalSku] = useState(null);
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [bulkAddModalOpen, setBulkAddModalOpen] = useState(false);
+  const [bulkPriceModalOpen, setBulkPriceModalOpen] = useState(false);
   const [detailSku, setDetailSku] = useState(null);
   const [confirmDeleteSku, setConfirmDeleteSku] = useState(null);
 
@@ -215,6 +216,39 @@ function App(){
     } catch (err) {
       showToast("Failed to save — check connection");
       return { added: 0, skipped: parsedItems.map(i => ({ ...i, reason: "save failed" })) };
+    }
+  }, [findItemBySku, showToast]);
+
+  const handleBulkUpdatePrices = useCallback(async (rows) => {
+    const toUpdate = [];
+    const skipped = [];
+    rows.forEach(row => {
+      if (!row.sku || !row.suggestedPrice) { skipped.push({ ...row, reason: "missing SKU or price" }); return; }
+      const item = findItemBySku(row.sku);
+      if (!item) { skipped.push({ ...row, reason: "SKU not found in stock" }); return; }
+      toUpdate.push({ item, suggestedPrice: row.suggestedPrice });
+    });
+
+    if (toUpdate.length === 0) {
+      showToast(skipped.length ? `Nothing updated — ${skipped.length} skipped` : "No valid rows to update");
+      return { updated: 0, skipped };
+    }
+
+    const now = Date.now();
+    const updates = {};
+    toUpdate.forEach(({ item, suggestedPrice }) => {
+      updates["items/" + item.id + "/suggestedPrice"] = Number(suggestedPrice);
+      const logId = uid();
+      updates["changelog/" + logId] = { id: logId, ts: now, type: "edit", sku: item.sku, detail: `Set suggested price to $${suggestedPrice} (bulk)` };
+    });
+
+    try {
+      await db.ref().update(updates);
+      showToast(`Updated ${toUpdate.length} price${toUpdate.length === 1 ? "" : "s"}${skipped.length ? `, skipped ${skipped.length}` : ""}`);
+      return { updated: toUpdate.length, skipped };
+    } catch (err) {
+      showToast("Failed to save — check connection");
+      return { updated: 0, skipped: rows.map(r => ({ ...r, reason: "save failed" })) };
     }
   }, [findItemBySku, showToast]);
 
@@ -406,7 +440,18 @@ function App(){
       statCard("Avg profit/sale", "$" + avgProfit.toLocaleString(undefined, { maximumFractionDigits: 0 })),
       statCard("Inventory cost", "$" + inv.cost.toLocaleString(undefined, { maximumFractionDigits: 0 })),
       statCard("Est. inventory value", "$" + inv.estValue.toLocaleString(undefined, { maximumFractionDigits: 0 }), inv.priced < (items||[]).length ? `${inv.priced}/${(items||[]).length} priced` : "all priced"),
-      statCard("Potential profit", "$" + inventoryPotentialProfit.toLocaleString(undefined, { maximumFractionDigits: 0 }))
+      statCard("Potential profit", "$" + inventoryPotentialProfit.toLocaleString(undefined, { maximumFractionDigits: 0 }), inv.priced < (items||[]).length ? `${inv.priced}/${(items||[]).length} priced` : "all priced")
+    ),
+
+    (items || []).length > 0 && inv.priced < (items||[]).length && e("div", {
+      style: { display: "flex", alignItems: "center", gap: 8, background: "#fdf3dd", border: "1px solid #e8c876", borderRadius: 8, padding: "0.6rem 0.75rem", marginBottom: 12, fontSize: 12.5, color: "#7a5a10" }
+    },
+      e("i", { className: "ti ti-alert-triangle", style: { fontSize: 16, flexShrink: 0 } }),
+      e("div", null,
+        `${(items||[]).length - inv.priced} item${((items||[]).length - inv.priced) === 1 ? "" : "s"} in stock ${((items||[]).length - inv.priced) === 1 ? "has" : "have"} no suggested price set — they're counted at cost, so Potential profit and Est. inventory value don't reflect them yet. Use `,
+        e("b", null, "Bulk update prices"),
+        " below to fix."
+      )
     ),
 
     e("div", { style: { display: "flex", gap: 6, marginBottom: 12, borderBottom: "0.5px solid var(--border)", overflowX: "auto" } },
@@ -422,13 +467,17 @@ function App(){
       )
     ),
 
-    e("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
+    e("div", { style: { display: "flex", gap: 8, marginBottom: 8 } },
       e("button", { onClick: () => setScannerOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
         e("i", { className: "ti ti-qrcode" }), "Scan to sell"),
       e("button", { onClick: () => setAddModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
         e("i", { className: "ti ti-plus" }), "Add item"),
       e("button", { onClick: () => setBulkAddModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
         e("i", { className: "ti ti-stack-2" }), "Bulk add")
+    ),
+    e("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
+      e("button", { onClick: () => setBulkPriceModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13 } },
+        e("i", { className: "ti ti-tag" }), "Bulk update prices")
     ),
 
     tab === "stock" && e("div", null,
@@ -510,6 +559,11 @@ function App(){
     bulkAddModalOpen && e(BulkAddModal, {
       onCancel: () => setBulkAddModalOpen(false),
       onConfirm: async (parsedItems) => { const result = await handleBulkAddItems(parsedItems); if (result.added > 0 && result.skipped.length === 0) setBulkAddModalOpen(false); return result; }
+    }),
+
+    bulkPriceModalOpen && e(BulkPriceUpdateModal, {
+      onCancel: () => setBulkPriceModalOpen(false),
+      onConfirm: async (rows) => { const result = await handleBulkUpdatePrices(rows); if (result.updated > 0 && result.skipped.length === 0) setBulkPriceModalOpen(false); return result; }
     }),
 
     detailSku && !sellModalSku && e(DetailModal, {
@@ -922,6 +976,67 @@ function BulkAddModal({ onCancel, onConfirm }){
           disabled: validCount === 0 || busy,
           style: { flex: 1, borderColor: "var(--border-accent)", color: validCount > 0 && !busy ? "var(--text-accent)" : undefined }
         }, busy ? "Adding…" : `Add ${validCount || ""} item${validCount === 1 ? "" : "s"}`)
+      )
+    )
+  );
+}
+
+function parsePriceRows(text){
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  return lines
+    .filter(line => !/^sku[\t,]/i.test(line))
+    .map(line => {
+      const parts = line.includes("\t") ? line.split("\t") : line.split(",");
+      return { sku: (parts[0] || "").trim(), suggestedPrice: (parts[1] || "").trim() };
+    });
+}
+
+function BulkPriceUpdateModal({ onCancel, onConfirm }){
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const parsed = React.useMemo(() => parsePriceRows(text), [text]);
+  const validCount = parsed.filter(r => r.sku && r.suggestedPrice).length;
+  const invalidCount = parsed.length - validCount;
+
+  const handleConfirm = async () => {
+    setBusy(true);
+    const res = await onConfirm(parsed.filter(r => r.sku && r.suggestedPrice));
+    setBusy(false);
+    setResult(res);
+  };
+
+  return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
+    e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "92%", maxWidth: 420, maxHeight: "86vh", overflowY: "auto" } },
+      e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 6 } }, "Bulk update suggested prices"),
+      e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 } },
+        "Paste SKU and suggested price, one item per line — tab or comma separated. Only updates the suggested resale price on items already in stock; everything else about the item stays the same."
+      ),
+      e("textarea", {
+        value: text,
+        onChange: ev => setText(ev.target.value),
+        placeholder: "SKU\tSuggested Price\n40239606\t480\n40239163\t480",
+        rows: 8,
+        style: { width: "100%", fontSize: 12, fontFamily: "monospace", marginBottom: 8, padding: 8 }
+      }),
+      text.length > 0 && e("div", { style: { fontSize: 12, marginBottom: 10, color: invalidCount > 0 ? "#a3771f" : "var(--text-secondary)" } },
+        `${validCount} price${validCount === 1 ? "" : "s"} ready to update` + (invalidCount > 0 ? ` · ${invalidCount} skipped (missing SKU or price)` : "")
+      ),
+      result && e("div", { style: { fontSize: 12, marginBottom: 10, padding: 8, borderRadius: 8, background: "var(--surface-1)" } },
+        e("div", { style: { fontWeight: 600, marginBottom: 4 } }, `Updated ${result.updated} price${result.updated === 1 ? "" : "s"}`),
+        result.skipped.length > 0 && e("div", null,
+          `Skipped ${result.skipped.length}:`,
+          result.skipped.slice(0, 10).map((s, idx) => e("div", { key: idx, style: { color: "var(--text-secondary)" } }, `${s.sku || "(no SKU)"} — ${s.reason}`))
+        )
+      ),
+      e("div", { style: { display: "flex", gap: 8 } },
+        e("button", { onClick: onCancel, style: { flex: 1 } }, result ? "Close" : "Cancel"),
+        !result && e("button", {
+          onClick: handleConfirm,
+          disabled: validCount === 0 || busy,
+          style: { flex: 1, borderColor: "var(--border-accent)", color: validCount > 0 && !busy ? "var(--text-accent)" : undefined }
+        }, busy ? "Updating…" : `Update ${validCount || ""} price${validCount === 1 ? "" : "s"}`)
       )
     )
   );
