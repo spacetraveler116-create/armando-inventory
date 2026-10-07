@@ -635,16 +635,23 @@ function downloadJSON(filename, obj){
 function SalesTab({ sales, onUndo }){
   const [fromDate, setFromDate] = React.useState("");
   const [toDate, setToDate] = React.useState("");
+  const [query, setQuery] = React.useState("");
 
   const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
     return sales.filter(s => {
+      if (q) {
+        const hay = [s.sku, s.brand, s.model, s.storage, s.color, s.carrier, s.imei, s.platform, s.date]
+          .filter(Boolean).join(" ").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
       if (!s.timestamp) return true;
       const d = new Date(s.timestamp);
       if (fromDate && d < new Date(fromDate)) return false;
       if (toDate && d > new Date(new Date(toDate).getTime() + 86400000 - 1)) return false;
       return true;
     }).sort((a,b) => (b.timestamp||0) - (a.timestamp||0));
-  }, [sales, fromDate, toDate]);
+  }, [sales, fromDate, toDate, query]);
 
   const exportCSV = () => {
     downloadCSV(
@@ -655,6 +662,7 @@ function SalesTab({ sales, onUndo }){
   };
 
   return e("div", null,
+    e("input", { type: "text", placeholder: "Search sold SKU, model, color, IMEI, platform", value: query, onChange: ev => setQuery(ev.target.value), style: { width: "100%", marginBottom: 10 } }),
     e("div", { style: { display: "flex", gap: 6, marginBottom: 10, alignItems: "flex-end" } },
       e("div", { style: { flex: 1 } },
         e("label", { style: { fontSize: 11, color: "var(--text-secondary)" } }, "From"),
@@ -667,7 +675,7 @@ function SalesTab({ sales, onUndo }){
       e("button", { onClick: exportCSV, title: "Export CSV", style: { padding: "0.5rem 0.6rem", display: "flex", alignItems: "center", gap: 4 } },
         e("i", { className: "ti ti-download" }))
     ),
-    filtered.length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No sales in this range."),
+    filtered.length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, (query.trim() ? "No sold items match your search." : "No sales in this range.")),
     e("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
       filtered.map(s =>
         e("div", { key: s.id, style: { background: "var(--surface-2)", border: "1px solid var(--border)", borderRadius: 14, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", padding: "0.75rem 1rem" } },
