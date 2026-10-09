@@ -146,6 +146,7 @@ function App(){
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [bulkAddModalOpen, setBulkAddModalOpen] = useState(false);
   const [bulkPriceModalOpen, setBulkPriceModalOpen] = useState(false);
+  const [bulkTagModalOpen, setBulkTagModalOpen] = useState(false);
   const [detailSku, setDetailSku] = useState(null);
   const [editSku, setEditSku] = useState(null);
   const [confirmDeleteSku, setConfirmDeleteSku] = useState(null);
@@ -186,7 +187,13 @@ function App(){
 
   const handleEditItem = useCallback(async (id, sku, updates) => {
     try {
-      await db.ref("items/" + id).update(updates);
+      const clean = { ...updates };
+      clean.cost = Number(updates.cost) || 0;
+      clean.suggestedPrice = updates.suggestedPrice === "" || updates.suggestedPrice == null ? null : Number(updates.suggestedPrice);
+      clean.extraCost = updates.extraCost === "" || updates.extraCost == null ? null : Number(updates.extraCost);
+      clean.batch = updates.batch || null;
+      clean.vendor = updates.vendor || null;
+      await db.ref("items/" + id).update(clean);
       addLogEntry({ type: "edit", sku, detail: "Edited item details" });
       showToast("Item updated");
       return true;
@@ -205,7 +212,11 @@ function App(){
       if (findItemBySku(item.sku)) { skipped.push({ ...item, reason: "SKU already in stock" }); return; }
       if (seenInBatch.has(item.sku)) { skipped.push({ ...item, reason: "duplicate in pasted list" }); return; }
       seenInBatch.add(item.sku);
-      toAdd.push(item);
+      const clean = { ...item, cost: Number(item.cost) || 0 };
+      clean.suggestedPrice = item.suggestedPrice ? Number(item.suggestedPrice) : null;
+      clean.batch = item.batch || null;
+      clean.vendor = item.vendor || null;
+      toAdd.push(clean);
     });
 
     if (toAdd.length === 0) {
@@ -229,6 +240,36 @@ function App(){
     } catch (err) {
       showToast("Failed to save — check connection");
       return { added: 0, skipped: parsedItems.map(i => ({ ...i, reason: "save failed" })) };
+    }
+  }, [findItemBySku, showToast]);
+
+  const handleBulkAssignBatch = useCallback(async (rows) => {
+    const toUpdate = [];
+    const skipped = [];
+    rows.forEach(row => {
+      const item = findItemBySku(row.sku);
+      if (!item) { skipped.push({ ...row, reason: "SKU not found in stock" }); return; }
+      toUpdate.push({ item, batch: row.batch, vendor: row.vendor });
+    });
+    if (toUpdate.length === 0) {
+      showToast(skipped.length ? `Nothing updated — ${skipped.length} skipped` : "No valid rows to update");
+      return { updated: 0, skipped };
+    }
+    const now = Date.now();
+    const updates = {};
+    toUpdate.forEach(({ item, batch, vendor }) => {
+      if (batch) updates["items/" + item.id + "/batch"] = batch;
+      if (vendor) updates["items/" + item.id + "/vendor"] = vendor;
+      const logId = uid();
+      updates["changelog/" + logId] = { id: logId, ts: now, type: "edit", sku: item.sku, detail: `Tagged batch ${batch || "—"}${vendor ? " / " + vendor : ""} (bulk)` };
+    });
+    try {
+      await db.ref().update(updates);
+      showToast(`Tagged ${toUpdate.length} item${toUpdate.length === 1 ? "" : "s"}${skipped.length ? `, skipped ${skipped.length}` : ""}`);
+      return { updated: toUpdate.length, skipped };
+    } catch (err) {
+      showToast("Failed to save — check connection");
+      return { updated: 0, skipped: rows.map(r => ({ ...r, reason: "save failed" })) };
     }
   }, [findItemBySku, showToast]);
 
@@ -278,17 +319,24 @@ function App(){
     }
   }, [findItemBySku, addLogEntry, showToast]);
 
-  const handleSellItem = useCallback(async (sku, soldPrice, platform) => {
+  const handleSellItem = useCallback(async (sku, soldPrice, platform, fees) => {
     const item = findItemBySku(sku);
     if (!item) { showToast("Item not found in stock"); return false; }
-    const cost = Number(item.cost) || 0;
+    const baseCost = Number(item.cost) || 0;
+    const extraCost = Number(item.extraCost) || 0;
+    const cost = round2(baseCost + extraCost);
+    const feeAmt = Number(fees) || 0;
     const price = Number(soldPrice) || 0;
-    const profit = round2(price - cost);
+    const profit = round2(price - cost - feeAmt);
     const saleId = uid();
     const saleRecord = {
-      id: saleId, sku: item.sku, rack: item.rack, brand: item.brand, model: item.model,
-      storage: item.storage, color: item.color, carrier: item.carrier, imei: item.imei,
-      condition: item.condition, notes: item.notes, cost, soldPrice: price, profit,
+      id: saleId, sku: item.sku, rack: item.rack || "", brand: item.brand || "", model: item.model || "",
+      storage: item.storage || "", color: item.color || "", carrier: item.carrier || "", imei: item.imei || "",
+      condition: item.condition || "", notes: item.notes || "", cost, baseCost, extraCost, fees: feeAmt,
+      batch: item.batch || "", vendor: item.vendor || "",
+      suggestedPrice: item.suggestedPrice ? Number(item.suggestedPrice) : null,
+      addedAt: item.addedAt || null,
+      soldPrice: price, profit,
       date: todayStr(), timestamp: Date.now(), platform: platform || "Facebook Marketplace"
     };
     try {
@@ -296,7 +344,7 @@ function App(){
       updates["sales/" + saleId] = saleRecord;
       updates["items/" + item.id] = null;
       await db.ref().update(updates);
-      addLogEntry({ type: "sell", sku, detail: `Sold for $${price} (profit $${profit})` });
+      addLogEntry({ type: "sell", sku, detail: `Sold for $${price} (profit $${profit}${feeAmt ? `, fees $${feeAmt}` : ""})` });
       showToast(`Sold for $${price} — profit $${profit}`);
       return true;
     } catch (err) {
@@ -310,9 +358,13 @@ function App(){
     if (!sale) return;
     const newItemId = uid();
     const restoredItem = {
-      id: newItemId, sku: sale.sku, rack: sale.rack, brand: sale.brand, model: sale.model,
-      storage: sale.storage, color: sale.color, carrier: sale.carrier, imei: sale.imei,
-      condition: sale.condition, notes: sale.notes, cost: sale.cost, addedAt: Date.now()
+      id: newItemId, sku: sale.sku, rack: sale.rack || "", brand: sale.brand || "", model: sale.model || "",
+      storage: sale.storage || "", color: sale.color || "", carrier: sale.carrier || "", imei: sale.imei || "",
+      condition: sale.condition || "", notes: sale.notes || "",
+      cost: sale.baseCost != null ? sale.baseCost : (sale.cost || 0),
+      extraCost: sale.extraCost || null, batch: sale.batch || null, vendor: sale.vendor || null,
+      suggestedPrice: sale.suggestedPrice || null,
+      addedAt: sale.addedAt || Date.now()
     };
     try {
       const updates = {};
@@ -325,6 +377,22 @@ function App(){
       showToast("Failed to undo — check connection");
     }
   }, [sales, addLogEntry, showToast]);
+
+  const copyListing = useCallback(async (item) => {
+    if (!item) return;
+    const text = buildListing(item);
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("Listing copied — paste into Marketplace");
+    } catch (err) {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); showToast("Listing copied — paste into Marketplace"); }
+      catch (err2) { showToast("Couldn't copy listing"); }
+      document.body.removeChild(ta);
+    }
+  }, [showToast]);
 
   const stopScanner = useCallback(() => {
     if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
@@ -398,9 +466,9 @@ function App(){
 
   const filteredItems = (items || []).filter(i => {
     if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return (i.sku||"").toLowerCase().includes(q) || (i.model||"").toLowerCase().includes(q) ||
-           (i.color||"").toLowerCase().includes(q) || (i.rack||"").toLowerCase().includes(q);
+    const q = search.trim().toLowerCase();
+    return [i.sku, i.imei, i.brand, i.model, i.storage, i.color, i.carrier, i.rack, i.batch, i.vendor]
+      .some(v => String(v || "").toLowerCase().includes(q));
   });
 
   const totals = (sales || []).reduce((acc, s) => {
@@ -414,7 +482,7 @@ function App(){
   const avgProfit = totals.count > 0 ? round2(totals.profit / totals.count) : 0;
 
   const inv = (items || []).reduce((acc, i) => {
-    const cost = Number(i.cost) || 0;
+    const cost = itemCost(i);
     const sug = Number(i.suggestedPrice) || 0;
     acc.cost += cost;
     if (sug > 0) { acc.estValue += sug; acc.priced += 1; }
@@ -490,11 +558,13 @@ function App(){
     ),
     e("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
       e("button", { onClick: () => setBulkPriceModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13 } },
-        e("i", { className: "ti ti-tag" }), "Bulk update prices")
+        e("i", { className: "ti ti-tag" }), "Bulk update prices"),
+      e("button", { onClick: () => setBulkTagModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13 } },
+        e("i", { className: "ti ti-receipt" }), "Assign batch / vendor")
     ),
 
     tab === "stock" && e("div", null,
-      e("input", { type: "text", placeholder: "Search SKU, model, color, rack", value: search, onChange: ev => setSearch(ev.target.value), style: { width: "100%", marginBottom: 10 } }),
+      e("input", { type: "text", placeholder: "Search SKU, IMEI, model, color, rack, batch", value: search, onChange: ev => setSearch(ev.target.value), style: { width: "100%", marginBottom: 10 } }),
       filteredItems.length === 0 && e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } },
         search ? "No items match your search." : "No items in stock. Add your first item."),
       e("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
@@ -506,12 +576,12 @@ function App(){
               e("div", { style: { minWidth: 0 } },
                 e("div", { style: { fontWeight: 600, fontSize: 14 } }, `${item.brand || ""} ${item.model || ""}`),
                 e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginTop: 2 } }, [item.storage, item.color, item.carrier].filter(Boolean).join(" · ")),
-                e("div", { style: { fontSize: 11, color: "var(--text-muted)", marginTop: 4 } }, `${item.sku} · ${item.rack || "No rack"}`),
+                e("div", { style: { fontSize: 11, color: "var(--text-muted)", marginTop: 4 } }, `${item.sku} · ${item.rack || "No rack"}${item.batch ? " · " + item.batch : ""}`),
                 isAging && e("div", { style: { fontSize: 11, color: "#a3771f", marginTop: 4, display: "flex", alignItems: "center", gap: 4 } },
                   e("i", { className: "ti ti-clock", style: { fontSize: 12 } }), `${daysInStock} days in stock`)
               ),
               e("div", { style: { textAlign: "right", flexShrink: 0 } },
-                e("div", { style: { fontSize: 15, fontWeight: 600 } }, "$" + Number(item.cost || 0).toLocaleString()),
+                e("div", { style: { fontSize: 15, fontWeight: 600 } }, "$" + itemCost(item).toLocaleString()),
                 e("div", { style: { fontSize: 11, color: "var(--text-muted)" } }, "cost"),
                 item.suggestedPrice && e("div", { style: { fontSize: 12, color: "var(--text-accent)", marginTop: 4 } }, "$" + Number(item.suggestedPrice).toLocaleString() + " asking")
               )
@@ -561,7 +631,7 @@ function App(){
     sellModalSku && e(SellModal, {
       item: findItemBySku(sellModalSku),
       onCancel: () => setSellModalSku(null),
-      onConfirm: async (price, platform) => { const ok = await handleSellItem(sellModalSku, price, platform); if (ok) setSellModalSku(null); }
+      onConfirm: async (price, platform, fees) => { const ok = await handleSellItem(sellModalSku, price, platform, fees); if (ok) setSellModalSku(null); }
     }),
 
     addModalOpen && e(AddItemModal, {
@@ -574,6 +644,11 @@ function App(){
       onConfirm: async (parsedItems) => { const result = await handleBulkAddItems(parsedItems); if (result.added > 0 && result.skipped.length === 0) setBulkAddModalOpen(false); return result; }
     }),
 
+    bulkTagModalOpen && e(BulkTagModal, {
+      onCancel: () => setBulkTagModalOpen(false),
+      onConfirm: async (rows) => { const result = await handleBulkAssignBatch(rows); if (result.updated > 0 && result.skipped.length === 0) setBulkTagModalOpen(false); return result; }
+    }),
+
     bulkPriceModalOpen && e(BulkPriceUpdateModal, {
       onCancel: () => setBulkPriceModalOpen(false),
       onConfirm: async (rows) => { const result = await handleBulkUpdatePrices(rows); if (result.updated > 0 && result.skipped.length === 0) setBulkPriceModalOpen(false); return result; }
@@ -583,7 +658,8 @@ function App(){
       sku: detailSku, item: findItemBySku(detailSku),
       onClose: () => setDetailSku(null),
       onSell: () => { setSellModalSku(detailSku); setDetailSku(null); },
-      onEdit: () => setEditSku(detailSku)
+      onEdit: () => setEditSku(detailSku),
+      onCopyListing: () => copyListing(findItemBySku(detailSku))
     }),
 
     editSku && e(EditItemModal, {
@@ -657,7 +733,7 @@ function SalesTab({ sales, onUndo }){
     downloadCSV(
       `sales_export_${new Date().toISOString().slice(0,10)}.csv`,
       filtered,
-      ["sku","brand","model","storage","color","carrier","condition","cost","soldPrice","profit","platform","date"]
+      ["sku","brand","model","storage","color","carrier","condition","cost","fees","soldPrice","profit","platform","batch","vendor","date"]
     );
   };
 
@@ -782,6 +858,89 @@ function DailyTab({ sales }){
   );
 }
 
+function itemCost(i){ return (Number(i.cost) || 0) + (Number(i.extraCost) || 0); }
+
+const LISTING_FEATURES = {
+  "iphone 13": ["A15 Bionic chip", "Super Retina XDR display", "Dual 12MP camera system", "Face ID & iOS support", "All-day battery life"],
+  "iphone 13 pro": ["A15 Bionic chip", "ProMotion 120Hz display", "Triple 12MP camera w/ 3x Telephoto", "Face ID & iOS support", "Pro-grade camera system"],
+  "iphone 13 pro max": ["A15 Bionic chip", "6.7\" ProMotion 120Hz display", "Triple 12MP camera w/ 3x Telephoto", "Face ID & iOS support", "Pro-grade camera system"],
+  "iphone 14": ["A15 Bionic chip", "Super Retina XDR display", "Dual 12MP camera system", "Crash Detection & Emergency SOS", "Face ID & iOS support"],
+  "iphone 14 plus": ["A15 Bionic chip", "6.7\" Super Retina XDR display", "Dual 12MP camera system", "Crash Detection & Emergency SOS", "Face ID & iOS support"],
+  "iphone 14 pro": ["A16 Bionic chip", "Dynamic Island & Always-On display", "48MP Fusion + 12MP Ultra Wide + 12MP 3x Telephoto", "Face ID & iOS support", "Pro-grade camera system"],
+  "iphone 14 pro max": ["A16 Bionic chip", "Dynamic Island & Always-On display", "48MP Fusion + 12MP Ultra Wide + 12MP 3x Telephoto", "Face ID & iOS support", "Pro-grade camera system"],
+  "iphone 15": ["A16 Bionic chip", "Dynamic Island", "USB-C", "48MP Main camera", "Face ID & iOS support"],
+  "iphone 15 plus": ["A16 Bionic chip", "Dynamic Island", "USB-C", "48MP Main camera", "Face ID & iOS support"],
+  "iphone 15 pro": ["A17 Pro chip", "Titanium design", "USB-C", "48MP Main + Ultra Wide + 3x Telephoto", "Action button"],
+  "iphone 15 pro max": ["A17 Pro chip", "Titanium design", "USB-C", "48MP Main + Ultra Wide + 5x Telephoto", "Action button"],
+  "iphone 16 plus": ["A18 chip", "Dynamic Island", "USB-C", "48MP Fusion camera", "Camera Control button"],
+  "iphone 16 pro": ["A18 Pro chip", "Titanium design", "Camera Control button", "48MP Fusion + Ultra Wide + 5x Telephoto", "USB-C"],
+  "iphone 16 pro max": ["A18 Pro chip", "Titanium design", "Camera Control button", "48MP Fusion + Ultra Wide + 5x Telephoto", "USB-C"],
+  "galaxy s24 ultra": ["Snapdragon 8 Gen 3", "Built-in S Pen", "200MP camera system", "Titanium frame", "120Hz AMOLED display"]
+};
+
+function listingCondition(item){
+  const c = (item.condition || "").toLowerCase();
+  const n = (item.notes || "").toLowerCase();
+  if (c.includes("poor") || n.includes("broken") || n.includes("crack")) return "Used - Acceptable";
+  if (c.includes("excellent") || n.includes("little to no scratches")) return "Used - Like New";
+  if (c.includes("fair")) return "Used - Fair";
+  return "Used - Good";
+}
+
+function buildListing(item){
+  const brand = item.brand || "";
+  const model = item.model || "";
+  const cost = Math.round(Number(item.cost) || 0);
+  const price = Number(item.suggestedPrice) || 0;
+  const notes = String(item.notes || "");
+  const skuLine = `SKU: ${item.sku}-${cost}`;
+  const priceLine = price ? `Price: $${price}` : "Price: $";
+  const isPhone = (brand === "Apple" || brand === "Samsung") && item.storage;
+
+  if (!isPhone) {
+    const display = model.toLowerCase().startsWith(brand.toLowerCase()) ? model : `${brand} ${model}`.trim();
+    const title = display + (item.color ? ` – ${item.color}` : "");
+    return [title, priceLine, "Condition: Used - Like New (Open Box)", "",
+      `Selling a ${display}${item.color ? " in " + item.color : ""}. Tested and working.`, "",
+      "Details:", "✅ Open box / tested and functional",
+      notes ? `✅ ${notes}` : "✅ See photos for cosmetic condition", "",
+      "Great deal at a solid price.", "", "Message if interested — first come, first serve.", "", skuLine].join("\n");
+  }
+
+  const carrier = item.carrier || "";
+  const title = [`${brand} ${model}`, item.storage, carrier, item.color].filter(Boolean).join(" – ");
+  const bm = notes.match(/(\d{2,3})\s*%/);
+  const imeiUnverified = /imei not verified/i.test(notes);
+  const asIs = /as-is/i.test(notes);
+
+  let cosmetic = notes
+    .replace(/battery( health)?:?\s*\d{2,3}\s*%(\s*\/\s*\d+\s*cyc)?/ig, "")
+    .replace(/^\s*\d{2,3}\s*%(\s*\/\s*\d+\s*cyc)?/i, "")
+    .replace(/IMEI NOT VERIFIED;?/ig, "")
+    .replace(/clean esn;?/ig, "")
+    .replace(/(^|\s)[—-]\s*[—-]\s*/g, " — ")
+    .replace(/^[\s—-]+|[\s—-]+$/g, "")
+    .trim();
+
+  const details = [];
+  if (!carrier || carrier.toLowerCase() === "unlocked") details.push("✅ Unlocked — works with AT&T, T-Mobile, Verizon & more");
+  else details.push(`✅ Carrier: ${carrier}`);
+  if (/clean esn/i.test(notes)) details.push("✅ Clean ESN");
+  if (imeiUnverified) details.push("⚠️ IMEI not verified by carrier — sold as-is");
+  if (bm) details.push(`✅ Battery Health: ${bm[1]}%`);
+  details.push("✅ Smooth and fast performance");
+
+  const features = LISTING_FEATURES[model.toLowerCase()];
+  const lines = [title, priceLine, `Condition: ${listingCondition(item)}`, "",
+    `Selling a ${brand} ${model} (${item.storage})${item.color ? " in " + item.color : ""}. Fully tested — works perfectly.`, "",
+    "Details:", ...details, ""];
+  if (features) lines.push("Features:", ...features.map(f => `✅ ${f}`), "");
+  if (cosmetic) lines.push(`Cosmetic notes: ${cosmetic.replace(/\.$/, "")}.`, "");
+  if (asIs) lines.push("⚠️ Sold AS-IS — see notes above. No returns on as-is items.", "");
+  lines.push("Great device at a solid price.", "", "Message if interested — first come, first serve.", "", skuLine);
+  return lines.join("\n");
+}
+
 function ReportsTab({ sales, items, log }){
   const [groupBy, setGroupBy] = React.useState("platform");
 
@@ -789,8 +948,49 @@ function ReportsTab({ sales, items, log }){
     downloadCSV(
       `all_sales_${new Date().toISOString().slice(0,10)}.csv`,
       [...sales].sort((a,b) => (b.timestamp||0) - (a.timestamp||0)),
-      ["sku","brand","model","storage","color","carrier","condition","cost","soldPrice","profit","platform","date"]
+      ["sku","brand","model","storage","color","carrier","condition","cost","fees","soldPrice","profit","platform","batch","vendor","date"]
     );
+  };
+
+  const downloadPnLReport = () => {
+    const rows = [...sales].sort((a,b) => (a.timestamp||0) - (b.timestamp||0));
+    const totalRevenue = rows.reduce((sum, s) => sum + (Number(s.soldPrice) || 0), 0);
+    const totalCost = rows.reduce((sum, s) => sum + (Number(s.cost) || 0), 0);
+    const totalFees = rows.reduce((sum, s) => sum + (Number(s.fees) || 0), 0);
+    const netProfit = totalRevenue - totalCost - totalFees;
+    const margin = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
+    const esc = v => { const t = v === null || v === undefined ? "" : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+    const csvRow = arr => arr.map(esc).join(",");
+    const money = n => (Number(n) || 0).toFixed(2);
+    const lines = [];
+    lines.push(csvRow(["Royalty Tech - Sales P&L Report"]));
+    lines.push(csvRow(["Generated", new Date().toLocaleString()]));
+    lines.push(csvRow(["Period", "All time"]));
+    lines.push("");
+    lines.push(csvRow(["SALES LOG"]));
+    lines.push(csvRow(["Date","SKU","Brand","Model","Storage","Color","Carrier","Condition","Platform","Batch","Revenue","COGS","Fees","Profit","Margin %"]));
+    rows.forEach(s => {
+      const rev = Number(s.soldPrice) || 0, cost = Number(s.cost) || 0, fee = Number(s.fees) || 0;
+      const profit = s.profit != null && s.profit !== "" ? Number(s.profit) : (rev - cost - fee);
+      lines.push(csvRow([s.date || "", s.sku || "", s.brand || "", s.model || "", s.storage || "", s.color || "", s.carrier || "", s.condition || "", s.platform || "", s.batch || "",
+        money(rev), money(cost), money(fee), money(profit), (rev > 0 ? (profit / rev) * 100 : 0).toFixed(1)]));
+    });
+    lines.push("");
+    lines.push(csvRow(["P&L SUMMARY"]));
+    lines.push(csvRow(["Total Sales", rows.length]));
+    lines.push(csvRow(["Total Revenue", money(totalRevenue)]));
+    lines.push(csvRow(["Total COGS", money(totalCost)]));
+    lines.push(csvRow(["Total Fees & Shipping", money(totalFees)]));
+    lines.push(csvRow(["Net Profit", money(netProfit)]));
+    lines.push(csvRow(["Net Margin %", margin.toFixed(1)]));
+    lines.push(csvRow(["Avg Sale Price", money(rows.length ? totalRevenue / rows.length : 0)]));
+    lines.push(csvRow(["Avg Profit / Sale", money(rows.length ? netProfit / rows.length : 0)]));
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `pnl_report_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const downloadFullBackup = () => {
@@ -803,14 +1003,21 @@ function ReportsTab({ sales, items, log }){
   const groups = React.useMemo(() => {
     const map = {};
     sales.forEach(s => {
-      const key = groupBy === "platform"
-        ? (s.platform || "Unknown")
-        : (s.brand || "Unknown");
-      if (!map[key]) map[key] = { key, count: 0, revenue: 0, cost: 0, profit: 0 };
+      const key = groupBy === "platform" ? (s.platform || "Unknown")
+        : groupBy === "brand" ? (s.brand || "Unknown")
+        : groupBy === "model" ? (`${s.brand || ""} ${s.model || ""}`.trim() || "Unknown")
+        : groupBy === "batch" ? (s.batch || "Untagged")
+        : (s.vendor || "Untagged");
+      if (!map[key]) map[key] = { key, count: 0, revenue: 0, cost: 0, profit: 0, fees: 0, daysSum: 0, daysN: 0 };
       map[key].count += 1;
       map[key].revenue += Number(s.soldPrice) || 0;
       map[key].cost += Number(s.cost) || 0;
       map[key].profit += Number(s.profit) || 0;
+      map[key].fees += Number(s.fees) || 0;
+      if (s.addedAt && s.timestamp && s.timestamp >= s.addedAt) {
+        map[key].daysSum += (s.timestamp - s.addedAt) / 86400000;
+        map[key].daysN += 1;
+      }
     });
     return Object.values(map).sort((a, b) => b.profit - a.profit);
   }, [sales, groupBy]);
@@ -830,10 +1037,12 @@ function ReportsTab({ sales, items, log }){
       e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 } },
         "Download anytime. Save the file to your GitHub repo (e.g. a /backups folder) to keep an offline copy alongside your code."
       ),
-      e("div", { style: { display: "flex", gap: 8 } },
-        e("button", { onClick: downloadAllSales, style: { flex: 1, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
-          e("i", { className: "ti ti-file-spreadsheet" }), "All sales (CSV)"),
-        e("button", { onClick: downloadFullBackup, style: { flex: 1, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
+      e("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+        e("button", { onClick: downloadPnLReport, style: { flex: "1 1 45%", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
+          e("i", { className: "ti ti-file-spreadsheet" }), "P&L report (CSV)"),
+        e("button", { onClick: downloadAllSales, style: { flex: "1 1 45%", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
+          e("i", { className: "ti ti-list" }), "All sales (CSV)"),
+        e("button", { onClick: downloadFullBackup, style: { flex: "1 1 100%", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
           e("i", { className: "ti ti-database-export" }), "Full backup (JSON)")
       )
     ),
@@ -856,15 +1065,13 @@ function ReportsTab({ sales, items, log }){
     sales.length === 0
       ? e("div", { style: { textAlign: "center", padding: "2rem 0", color: "var(--text-secondary)", fontSize: 14 } }, "No sales yet to report on.")
       : e("div", null,
-    e("div", { style: { display: "flex", gap: 6, marginBottom: 12 } },
-      e("button", {
-        onClick: () => setGroupBy("platform"),
-        style: { flex: 1, fontSize: 13, borderColor: groupBy === "platform" ? "var(--border-accent)" : undefined, color: groupBy === "platform" ? "var(--text-accent)" : undefined }
-      }, "By platform"),
-      e("button", {
-        onClick: () => setGroupBy("brand"),
-        style: { flex: 1, fontSize: 13, borderColor: groupBy === "brand" ? "var(--border-accent)" : undefined, color: groupBy === "brand" ? "var(--text-accent)" : undefined }
-      }, "By brand")
+    e("div", { style: { display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" } },
+      [["platform", "Platform"], ["brand", "Brand"], ["model", "Model"], ["batch", "Batch"], ["vendor", "Vendor"]].map(([k, label]) =>
+        e("button", {
+          key: k, onClick: () => setGroupBy(k),
+          style: { flex: "1 1 28%", fontSize: 13, borderColor: groupBy === k ? "var(--border-accent)" : undefined, color: groupBy === k ? "var(--text-accent)" : undefined }
+        }, "By " + label.toLowerCase())
+      )
     ),
     e("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
       groups.map(g => {
@@ -879,7 +1086,9 @@ function ReportsTab({ sales, items, log }){
             e("div", null, e("div", { style: { color: "var(--text-secondary)" } }, "Cost"), e("div", { style: { fontWeight: 600 } }, "$" + g.cost.toLocaleString(undefined, { maximumFractionDigits: 0 }))),
             e("div", null, e("div", { style: { color: "var(--text-secondary)" } }, "Profit"), e("div", { style: { fontWeight: 600, color: g.profit >= 0 ? "var(--text-success)" : "var(--text-danger)" } }, "$" + g.profit.toLocaleString(undefined, { maximumFractionDigits: 0 }))),
             e("div", null, e("div", { style: { color: "var(--text-secondary)" } }, "ROI"), e("div", { style: { fontWeight: 600 } }, roi + "%"))
-          )
+          ),
+          (g.daysN > 0 || g.fees > 0) && e("div", { style: { fontSize: 11, color: "var(--text-secondary)", marginTop: 6 } },
+            [g.daysN > 0 ? `Avg ${round2(g.daysSum / g.daysN)} days to sell` : null, g.fees > 0 ? `Fees $${round2(g.fees)}` : null].filter(Boolean).join(" · "))
         );
       })
     )
@@ -890,30 +1099,34 @@ function ReportsTab({ sales, items, log }){
 function SellModal({ item, onCancel, onConfirm }){
   const [price, setPrice] = useState(item && item.suggestedPrice ? String(item.suggestedPrice) : "");
   const [platform, setPlatform] = useState(PLATFORMS[0]);
+  const [fees, setFees] = useState("");
   if (!item) return e(ConfirmModal, { title: "SKU not found", body: "This item isn't in current stock.", confirmLabel: "OK", onCancel, onConfirm: onCancel });
-  const cost = Number(item.cost) || 0;
-  const profit = price ? round2(Number(price) - cost) : null;
+  const cost = itemCost(item);
+  const feeAmt = Number(fees) || 0;
+  const profit = price ? round2(Number(price) - cost - feeAmt) : null;
   return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
     e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "90%", maxWidth: 340 } },
       e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 4 } }, `${item.brand || ""} ${item.model || ""}`),
-      e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 } }, `${[item.storage, item.color].filter(Boolean).join(" · ")} · Cost $${cost}`),
+      e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 } }, `${[item.storage, item.color].filter(Boolean).join(" · ")} · Cost $${cost}${Number(item.extraCost) ? ` (incl. $${item.extraCost} extra)` : ""}`),
       e("label", { style: { fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 } }, "Sold price"),
       e("input", { type: "number", inputMode: "decimal", placeholder: "0.00", value: price, onChange: ev => setPrice(ev.target.value), style: { width: "100%", marginBottom: 10 }, autoFocus: true }),
       e("label", { style: { fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 } }, "Platform"),
       e("select", { value: platform, onChange: ev => setPlatform(ev.target.value), style: { width: "100%", marginBottom: 10 } },
         PLATFORMS.map(p => e("option", { key: p, value: p }, p))
       ),
+      e("label", { style: { fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 } }, "Fees & shipping (optional)"),
+      e("input", { type: "number", inputMode: "decimal", placeholder: "0.00", value: fees, onChange: ev => setFees(ev.target.value), style: { width: "100%", marginBottom: 10 } }),
       profit !== null && !isNaN(profit) && e("div", { style: { fontSize: 13, marginBottom: 12, color: profit >= 0 ? "var(--text-success)" : "var(--text-danger)" } }, `Profit: ${profit >= 0 ? "+" : ""}$${profit}`),
       e("div", { style: { display: "flex", gap: 8 } },
         e("button", { onClick: onCancel, style: { flex: 1 } }, "Cancel"),
-        e("button", { onClick: () => price && onConfirm(price, platform), disabled: !price, style: { flex: 1, borderColor: "var(--border-accent)", color: price ? "var(--text-accent)" : undefined } }, "Confirm sale")
+        e("button", { onClick: () => price && onConfirm(price, platform, fees), disabled: !price, style: { flex: 1, borderColor: "var(--border-accent)", color: price ? "var(--text-accent)" : undefined } }, "Confirm sale")
       )
     )
   );
 }
 
 function AddItemModal({ onCancel, onConfirm }){
-  const [form, setForm] = useState({ sku: "", rack: RACKS[0], brand: "", model: "", storage: "", color: "", carrier: "", imei: "", condition: CONDITIONS[0], cost: "", suggestedPrice: "", notes: "" });
+  const [form, setForm] = useState({ sku: "", rack: RACKS[0], brand: "", model: "", storage: "", color: "", carrier: "", imei: "", condition: CONDITIONS[0], cost: "", suggestedPrice: "", notes: "", batch: "", vendor: "" });
   const set = k => ev => setForm(f => ({ ...f, [k]: ev.target.value }));
   return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
     e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "92%", maxWidth: 360, maxHeight: "82vh", overflowY: "auto" } },
@@ -939,6 +1152,10 @@ function AddItemModal({ onCancel, onConfirm }){
       e("div", { style: { marginBottom: 8 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "IMEI"), e("input", { value: form.imei, onChange: set("imei"), style: { width: "100%" } })),
       e("div", { style: { marginBottom: 8 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Condition"),
         e("select", { value: form.condition, onChange: set("condition"), style: { width: "100%" } }, CONDITIONS.map(c => e("option", { key: c, value: c }, c)))),
+      e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 } },
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Batch / invoice #"), e("input", { value: form.batch, onChange: set("batch"), placeholder: "NPS #132597", style: { width: "100%" } })),
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Vendor"), e("input", { value: form.vendor, onChange: set("vendor"), placeholder: "NPS Auctions", style: { width: "100%" } }))
+      ),
       e("div", { style: { marginBottom: 14 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Notes"), e("input", { value: form.notes, onChange: set("notes"), placeholder: "Battery %, cycles, etc.", style: { width: "100%" } })),
       e("div", { style: { display: "flex", gap: 8 } },
         e("button", { onClick: onCancel, style: { flex: 1 } }, "Cancel"),
@@ -950,10 +1167,12 @@ function AddItemModal({ onCancel, onConfirm }){
 
 function EditItemModal({ item, onCancel, onConfirm }){
   const [form, setForm] = useState({
-    rack: item.rack || RACKS[0], brand: item.brand || "", model: item.model || "",
+    rack: item.rack || "", brand: item.brand || "", model: item.model || "",
     storage: item.storage || "", color: item.color || "", carrier: item.carrier || "",
-    imei: item.imei || "", condition: item.condition || CONDITIONS[0],
+    imei: item.imei || "", condition: item.condition || "",
     cost: item.cost != null ? String(item.cost) : "", suggestedPrice: item.suggestedPrice != null ? String(item.suggestedPrice) : "",
+    extraCost: item.extraCost != null ? String(item.extraCost) : "",
+    batch: item.batch || "", vendor: item.vendor || "",
     notes: item.notes || ""
   });
   const set = k => ev => setForm(f => ({ ...f, [k]: ev.target.value }));
@@ -966,7 +1185,7 @@ function EditItemModal({ item, onCancel, onConfirm }){
       ),
       e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 } },
         e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Rack"),
-          e("select", { value: form.rack, onChange: set("rack"), style: { width: "100%" } }, RACKS.map(r => e("option", { key: r, value: r }, r)))),
+          e("select", { value: form.rack, onChange: set("rack"), style: { width: "100%" } }, [e("option", { key: "_none", value: "" }, "Unassigned")].concat(RACKS.map(r => e("option", { key: r, value: r }, r))))),
         e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Brand"), e("input", { value: form.brand, onChange: set("brand"), style: { width: "100%" } }))
       ),
       e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 } },
@@ -981,9 +1200,16 @@ function EditItemModal({ item, onCancel, onConfirm }){
         e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Cost *"), e("input", { type: "number", inputMode: "decimal", value: form.cost, onChange: set("cost"), style: { width: "100%" } })),
         e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Suggested price"), e("input", { type: "number", inputMode: "decimal", value: form.suggestedPrice, onChange: set("suggestedPrice"), style: { width: "100%" } }))
       ),
+      e("div", { style: { marginBottom: 8 } },
+        e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Extra costs (repair, parts, shipping in)"),
+        e("input", { type: "number", inputMode: "decimal", value: form.extraCost, onChange: set("extraCost"), placeholder: "0 — added to cost when you sell", style: { width: "100%" } })),
+      e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 } },
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Batch / invoice #"), e("input", { value: form.batch, onChange: set("batch"), placeholder: "NPS #132597", style: { width: "100%" } })),
+        e("div", null, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Vendor"), e("input", { value: form.vendor, onChange: set("vendor"), placeholder: "NPS Auctions", style: { width: "100%" } }))
+      ),
       e("div", { style: { marginBottom: 8 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "IMEI"), e("input", { value: form.imei, onChange: set("imei"), style: { width: "100%" } })),
       e("div", { style: { marginBottom: 8 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Condition"),
-        e("select", { value: form.condition, onChange: set("condition"), style: { width: "100%" } }, CONDITIONS.map(c => e("option", { key: c, value: c }, c)))),
+        e("select", { value: form.condition, onChange: set("condition"), style: { width: "100%" } }, [e("option", { key: "_none", value: "" }, "—")].concat(CONDITIONS.map(c => e("option", { key: c, value: c }, c))))),
       e("div", { style: { marginBottom: 14 } }, e("label", { style: { fontSize: 12, color: "var(--text-secondary)" } }, "Notes"), e("input", { value: form.notes, onChange: set("notes"), placeholder: "Battery %, cycles, etc.", style: { width: "100%" } })),
       e("div", { style: { display: "flex", gap: 8 } },
         e("button", { onClick: onCancel, style: { flex: 1 } }, "Cancel"),
@@ -993,8 +1219,8 @@ function EditItemModal({ item, onCancel, onConfirm }){
   );
 }
 
-const BULK_ADD_FIELDS = ["sku","rack","brand","model","storage","color","carrier","imei","condition","cost","suggestedPrice","notes"];
-const BULK_ADD_TEMPLATE = "SKU\tRack\tBrand\tModel\tStorage\tColor\tCarrier\tIMEI\tCondition\tCost\tSuggested Price\tNotes";
+const BULK_ADD_FIELDS = ["sku","rack","brand","model","storage","color","carrier","imei","condition","cost","suggestedPrice","notes","batch","vendor"];
+const BULK_ADD_TEMPLATE = "SKU\tRack\tBrand\tModel\tStorage\tColor\tCarrier\tIMEI\tCondition\tCost\tSuggested Price\tNotes\tBatch\tVendor";
 
 function parseBulkRows(text){
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
@@ -1028,12 +1254,12 @@ function BulkAddModal({ onCancel, onConfirm }){
     e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "92%", maxWidth: 460, maxHeight: "86vh", overflowY: "auto" } },
       e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 6 } }, "Bulk add from invoice"),
       e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 } },
-        "Paste rows copied from a spreadsheet (tab-separated) or comma-separated — one item per line. Columns: SKU, Rack, Brand, Model, Storage, Color, Carrier, IMEI, Condition, Cost, Suggested Price, Notes. SKU and Cost are required; everything else is optional."
+        "Paste rows copied from a spreadsheet (tab-separated) or comma-separated — one item per line. Columns: SKU, Rack, Brand, Model, Storage, Color, Carrier, IMEI, Condition, Cost, Suggested Price, Notes, Batch, Vendor. SKU and Cost are required; everything else is optional (Batch = invoice/PO number, Vendor = who you bought from)."
       ),
       e("textarea", {
         value: text,
         onChange: ev => setText(ev.target.value),
-        placeholder: BULK_ADD_TEMPLATE + "\n40099999\tL-Rack47\tApple\tiPhone 14 Pro Max\t256GB\tSilver\tUnlocked\t355822269999999\tGood – Minor Scratches\t310\t480\tBattery 88%",
+        placeholder: BULK_ADD_TEMPLATE + "\n40099999\tL-Rack47\tApple\tiPhone 14 Pro Max\t256GB\tSilver\tUnlocked\t355822269999999\tGood – Minor Scratches\t310\t480\tBattery 88%\tNPS #132597\tNPS Auctions",
         rows: 8,
         style: { width: "100%", fontSize: 12, fontFamily: "monospace", marginBottom: 8, padding: 8 }
       }),
@@ -1054,6 +1280,53 @@ function BulkAddModal({ onCancel, onConfirm }){
           disabled: validCount === 0 || busy,
           style: { flex: 1, borderColor: "var(--border-accent)", color: validCount > 0 && !busy ? "var(--text-accent)" : undefined }
         }, busy ? "Adding…" : `Add ${validCount || ""} item${validCount === 1 ? "" : "s"}`)
+      )
+    )
+  );
+}
+
+function parseTagRows(text){
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  return lines
+    .filter(line => !/^sku[\t,]/i.test(line))
+    .map(line => {
+      const parts = line.includes("\t") ? line.split("\t") : line.split(",");
+      return { sku: (parts[0] || "").trim(), batch: (parts[1] || "").trim(), vendor: (parts[2] || "").trim() };
+    });
+}
+
+function BulkTagModal({ onCancel, onConfirm }){
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const parsed = React.useMemo(() => parseTagRows(text), [text]);
+  const valid = parsed.filter(r => r.sku && (r.batch || r.vendor));
+  const handleConfirm = async () => {
+    setBusy(true);
+    const res = await onConfirm(valid);
+    setBusy(false);
+    setResult(res);
+  };
+  return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
+    e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "92%", maxWidth: 420, maxHeight: "86vh", overflowY: "auto" } },
+      e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 6 } }, "Assign batch / vendor"),
+      e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 } },
+        "Paste SKU, batch (invoice #), and vendor — one item per line, tab or comma separated. Only tags items already in stock; nothing else changes."
+      ),
+      e("textarea", { value: text, onChange: ev => setText(ev.target.value), placeholder: "SKU\tBatch\tVendor\n40407569\tNPS #132597\tNPS Auctions", rows: 8,
+        style: { width: "100%", fontSize: 12, fontFamily: "monospace", marginBottom: 8, padding: 8 } }),
+      text.length > 0 && e("div", { style: { fontSize: 12, marginBottom: 10, color: "var(--text-secondary)" } },
+        `${valid.length} item${valid.length === 1 ? "" : "s"} ready to tag` + (parsed.length - valid.length > 0 ? ` · ${parsed.length - valid.length} skipped (missing SKU or batch/vendor)` : "")),
+      result && e("div", { style: { fontSize: 12, marginBottom: 10, padding: 8, borderRadius: 8, background: "var(--surface-1)" } },
+        e("div", { style: { fontWeight: 600, marginBottom: 4 } }, `Tagged ${result.updated} item${result.updated === 1 ? "" : "s"}`),
+        result.skipped.length > 0 && e("div", null, `Skipped ${result.skipped.length}:`,
+          result.skipped.slice(0, 10).map((r, idx) => e("div", { key: idx, style: { color: "var(--text-secondary)" } }, `${r.sku || "(no SKU)"} — ${r.reason}`)))
+      ),
+      e("div", { style: { display: "flex", gap: 8 } },
+        e("button", { onClick: onCancel, style: { flex: 1 } }, result ? "Close" : "Cancel"),
+        !result && e("button", { onClick: handleConfirm, disabled: valid.length === 0 || busy,
+          style: { flex: 1, borderColor: "var(--border-accent)", color: valid.length > 0 && !busy ? "var(--text-accent)" : undefined } },
+          busy ? "Tagging…" : `Tag ${valid.length || ""} item${valid.length === 1 ? "" : "s"}`)
       )
     )
   );
@@ -1120,7 +1393,7 @@ function BulkPriceUpdateModal({ onCancel, onConfirm }){
   );
 }
 
-function DetailModal({ sku, item, onClose, onSell, onEdit }){
+function DetailModal({ sku, item, onClose, onSell, onEdit, onCopyListing }){
   return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
     e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "90%", maxWidth: 340 } },
       !item
@@ -1134,7 +1407,7 @@ function DetailModal({ sku, item, onClose, onSell, onEdit }){
             e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 } }, item.sku),
             e("table", { style: { width: "100%", fontSize: 13, marginBottom: 16 } },
               e("tbody", null,
-                [["Rack", item.rack], ["Storage", item.storage], ["Color", item.color], ["Carrier", item.carrier], ["IMEI", item.imei], ["Condition", item.condition], ["Notes", item.notes], ["Cost", item.cost ? `$${item.cost}` : ""], ["Suggested price", item.suggestedPrice ? `$${item.suggestedPrice}` : "Not set"], ["Potential profit", item.suggestedPrice && item.cost ? `$${round2(Number(item.suggestedPrice) - Number(item.cost))}` : ""]]
+                [["Rack", item.rack], ["Storage", item.storage], ["Color", item.color], ["Carrier", item.carrier], ["IMEI", item.imei], ["Condition", item.condition], ["Notes", item.notes], ["Batch", item.batch], ["Vendor", item.vendor], ["Cost", item.cost ? `$${item.cost}` : ""], ["Extra costs", Number(item.extraCost) ? `$${item.extraCost}` : ""], ["Suggested price", item.suggestedPrice ? `$${item.suggestedPrice}` : "Not set"], ["Potential profit", item.suggestedPrice && item.cost ? `$${round2(Number(item.suggestedPrice) - itemCost(item))}` : ""]]
                   .filter(([, v]) => v)
                   .map(([k, v]) => e("tr", { key: k },
                     e("td", { style: { color: "var(--text-secondary)", padding: "4px 0", width: "40%" } }, k),
@@ -1142,6 +1415,8 @@ function DetailModal({ sku, item, onClose, onSell, onEdit }){
                   ))
               )
             ),
+            e("button", { onClick: onCopyListing, style: { width: "100%", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
+              e("i", { className: "ti ti-copy" }), "Copy Marketplace listing"),
             e("div", { style: { display: "flex", gap: 8 } },
               e("button", { onClick: onClose, style: { flex: 1 } }, "Close"),
               e("button", { onClick: onEdit, style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } },
