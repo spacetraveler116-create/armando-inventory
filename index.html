@@ -99,7 +99,7 @@ const e = React.createElement;
 
 const RACKS = ["L-Rack16","L-Rack17","L-Rack27","L-Rack38","L-Rack40","L-Rack42","L-Rack43","L-Rack47"];
 const PLATFORMS = ["Facebook Marketplace","Swappa","eBay","Local Pickup","Bundle"];
-const CONDITIONS = ["Excellent","Good – Minor Scratches","Good – Used","Fair – Scratches","Fair – Heavy Scratches","Poor – Broken Back"];
+const CONDITIONS = ["Excellent","Good – Minor Scratches","Good – Used","Fair – Scratches","Fair – Heavy Scratches","Fair – Used","Poor – Broken Back","Poor – Parts/Repair","New"];
 
 function todayStr(){ const d=new Date(); return d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}); }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -147,6 +147,7 @@ function App(){
   const [bulkAddModalOpen, setBulkAddModalOpen] = useState(false);
   const [bulkPriceModalOpen, setBulkPriceModalOpen] = useState(false);
   const [bulkTagModalOpen, setBulkTagModalOpen] = useState(false);
+  const [bulkEditModalOpen, setBulkEditModalOpen] = useState(false);
   const [detailSku, setDetailSku] = useState(null);
   const [editSku, setEditSku] = useState(null);
   const [confirmDeleteSku, setConfirmDeleteSku] = useState(null);
@@ -243,13 +244,46 @@ function App(){
     }
   }, [findItemBySku, showToast]);
 
+  const handleBulkEditDetails = useCallback(async (rows) => {
+    const FIELDS = ["brand", "model", "storage", "color", "carrier", "condition", "notes"];
+    const toUpdate = [];
+    const skipped = [];
+    rows.forEach(row => {
+      const item = findItemBySku(row.sku);
+      const sold = (sales || []).filter(sl => String(sl.sku) === String(row.sku));
+      if (!item && sold.length === 0) { skipped.push({ ...row, reason: "SKU not in stock or sales" }); return; }
+      toUpdate.push({ item, sold, row });
+    });
+    if (toUpdate.length === 0) {
+      showToast(skipped.length ? `Nothing updated — ${skipped.length} skipped` : "No valid rows to update");
+      return { updated: 0, skipped };
+    }
+    const updates = {};
+    let inStockCount = 0, soldCount = 0;
+    toUpdate.forEach(({ item, sold, row }) => {
+      if (item) { inStockCount += 1; FIELDS.forEach(f => { updates["items/" + item.id + "/" + f] = row[f] || ""; }); }
+      sold.forEach(sl => { soldCount += 1; FIELDS.forEach(f => { updates["sales/" + sl.id + "/" + f] = row[f] || ""; }); });
+    });
+    const logId = uid();
+    updates["changelog/" + logId] = { id: logId, ts: Date.now(), type: "edit", sku: "(bulk)", detail: `Cleaned details on ${inStockCount} in-stock and ${soldCount} sold items` };
+    try {
+      await db.ref().update(updates);
+      showToast(`Cleaned ${inStockCount} in stock + ${soldCount} sold${skipped.length ? `, skipped ${skipped.length}` : ""}`);
+      return { updated: toUpdate.length, skipped };
+    } catch (err) {
+      showToast("Failed to save — check connection");
+      return { updated: 0, skipped: rows.map(r => ({ ...r, reason: "save failed" })) };
+    }
+  }, [findItemBySku, sales, showToast]);
+
   const handleBulkAssignBatch = useCallback(async (rows) => {
     const toUpdate = [];
     const skipped = [];
     rows.forEach(row => {
       const item = findItemBySku(row.sku);
-      if (!item) { skipped.push({ ...row, reason: "SKU not found in stock" }); return; }
-      toUpdate.push({ item, batch: row.batch, vendor: row.vendor });
+      const sold = (sales || []).filter(sl => String(sl.sku) === String(row.sku));
+      if (!item && sold.length === 0) { skipped.push({ ...row, reason: "SKU not in stock or sales" }); return; }
+      toUpdate.push({ item, sold, sku: row.sku, batch: row.batch, vendor: row.vendor });
     });
     if (toUpdate.length === 0) {
       showToast(skipped.length ? `Nothing updated — ${skipped.length} skipped` : "No valid rows to update");
@@ -257,11 +291,17 @@ function App(){
     }
     const now = Date.now();
     const updates = {};
-    toUpdate.forEach(({ item, batch, vendor }) => {
-      if (batch) updates["items/" + item.id + "/batch"] = batch;
-      if (vendor) updates["items/" + item.id + "/vendor"] = vendor;
+    toUpdate.forEach(({ item, sold, sku, batch, vendor }) => {
+      if (item) {
+        if (batch) updates["items/" + item.id + "/batch"] = batch;
+        if (vendor) updates["items/" + item.id + "/vendor"] = vendor;
+      }
+      sold.forEach(sl => {
+        if (batch) updates["sales/" + sl.id + "/batch"] = batch;
+        if (vendor) updates["sales/" + sl.id + "/vendor"] = vendor;
+      });
       const logId = uid();
-      updates["changelog/" + logId] = { id: logId, ts: now, type: "edit", sku: item.sku, detail: `Tagged batch ${batch || "—"}${vendor ? " / " + vendor : ""} (bulk)` };
+      updates["changelog/" + logId] = { id: logId, ts: now, type: "edit", sku, detail: `Tagged batch ${batch || "—"}${vendor ? " / " + vendor : ""} (bulk)` };
     });
     try {
       await db.ref().update(updates);
@@ -271,7 +311,7 @@ function App(){
       showToast("Failed to save — check connection");
       return { updated: 0, skipped: rows.map(r => ({ ...r, reason: "save failed" })) };
     }
-  }, [findItemBySku, showToast]);
+  }, [findItemBySku, sales, showToast]);
 
   const handleBulkUpdatePrices = useCallback(async (rows) => {
     const toUpdate = [];
@@ -562,6 +602,10 @@ function App(){
       e("button", { onClick: () => setBulkTagModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13 } },
         e("i", { className: "ti ti-receipt" }), "Assign batch / vendor")
     ),
+    e("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
+      e("button", { onClick: () => setBulkEditModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13 } },
+        e("i", { className: "ti ti-edit" }), "Bulk edit details")
+    ),
 
     tab === "stock" && e("div", null,
       e("input", { type: "text", placeholder: "Search SKU, IMEI, model, color, rack, batch", value: search, onChange: ev => setSearch(ev.target.value), style: { width: "100%", marginBottom: 10 } }),
@@ -642,6 +686,11 @@ function App(){
     bulkAddModalOpen && e(BulkAddModal, {
       onCancel: () => setBulkAddModalOpen(false),
       onConfirm: async (parsedItems) => { const result = await handleBulkAddItems(parsedItems); if (result.added > 0 && result.skipped.length === 0) setBulkAddModalOpen(false); return result; }
+    }),
+
+    bulkEditModalOpen && e(BulkEditDetailsModal, {
+      onCancel: () => setBulkEditModalOpen(false),
+      onConfirm: async (rows) => { const result = await handleBulkEditDetails(rows); if (result.updated > 0 && result.skipped.length === 0) setBulkEditModalOpen(false); return result; }
     }),
 
     bulkTagModalOpen && e(BulkTagModal, {
@@ -881,6 +930,7 @@ const LISTING_FEATURES = {
 function listingCondition(item){
   const c = (item.condition || "").toLowerCase();
   const n = (item.notes || "").toLowerCase();
+  if (c === "new") return "New";
   if (c.includes("poor") || n.includes("broken") || n.includes("crack")) return "Used - Acceptable";
   if (c.includes("excellent") || n.includes("little to no scratches")) return "Used - Like New";
   if (c.includes("fair")) return "Used - Fair";
@@ -900,34 +950,40 @@ function buildListing(item){
   if (!isPhone) {
     const display = model.toLowerCase().startsWith(brand.toLowerCase()) ? model : `${brand} ${model}`.trim();
     const title = display + (item.color ? ` – ${item.color}` : "");
-    return [title, priceLine, "Condition: Used - Like New (Open Box)", "",
-      `Selling a ${display}${item.color ? " in " + item.color : ""}. Tested and working.`, "",
-      "Details:", "✅ Open box / tested and functional",
-      notes ? `✅ ${notes}` : "✅ See photos for cosmetic condition", "",
+    const isNew = (item.condition || "").toLowerCase() === "new";
+    return [title, priceLine, isNew ? "Condition: New" : "Condition: Used - Like New (Open Box)", "",
+      `Selling a ${display}${item.color ? " in " + item.color : ""}.${isNew ? "" : " Tested and working."}`, "",
+      "Details:", isNew ? "✅ Brand new — factory sealed" : "✅ Open box / tested and functional",
+      notes ? `✅ ${notes.split(" · ").join("; ")}` : "✅ See photos for cosmetic condition", "",
       "Great deal at a solid price.", "", "Message if interested — first come, first serve.", "", skuLine].join("\n");
   }
 
   const carrier = item.carrier || "";
   const title = [`${brand} ${model}`, item.storage, carrier, item.color].filter(Boolean).join(" – ");
-  const bm = notes.match(/(\d{2,3})\s*%/);
   const imeiUnverified = /imei not verified/i.test(notes);
   const asIs = /as-is/i.test(notes);
+  const cleanEsn = /clean esn/i.test(notes);
+  const needsService = /needs service/i.test(notes);
 
-  let cosmetic = notes
-    .replace(/battery( health)?:?\s*\d{2,3}\s*%(\s*\/\s*\d+\s*cyc)?/ig, "")
-    .replace(/^\s*\d{2,3}\s*%(\s*\/\s*\d+\s*cyc)?/i, "")
-    .replace(/IMEI NOT VERIFIED;?/ig, "")
-    .replace(/clean esn;?/ig, "")
-    .replace(/(^|\s)[—-]\s*[—-]\s*/g, " — ")
-    .replace(/^[\s—-]+|[\s—-]+$/g, "")
-    .trim();
+  let rest = notes;
+  let battery = null, cycles = null;
+  let bmatch = rest.match(/battery\s*(\d{1,3})\s*%/i) || rest.match(/^\s*(\d{1,3})\s*%/);
+  if (bmatch) { battery = bmatch[1]; rest = rest.replace(bmatch[0], " · "); }
+  const cmatch = rest.match(/(\d+)\s*(?:cycles?|cyc)\b/i);
+  if (cmatch) { cycles = cmatch[1]; rest = rest.replace(cmatch[0], " · "); }
+  rest = rest.replace(/\(?\s*needs service\s*\)?/ig, " · ");
+  const cosmetic = rest.split(/\s+·\s+|\s*;\s*|\s+—\s+|\s+\/\s+/)
+    .map(sg => sg.replace(/^[\s·—-]+|[\s·—-]+$/g, ""))
+    .filter(sg => sg && !/^(model#|serial\s)/i.test(sg) && !/^(clean esn|imei not verified|priced as unlocked)$/i.test(sg))
+    .join("; ");
 
   const details = [];
   if (!carrier || carrier.toLowerCase() === "unlocked") details.push("✅ Unlocked — works with AT&T, T-Mobile, Verizon & more");
   else details.push(`✅ Carrier: ${carrier}`);
-  if (/clean esn/i.test(notes)) details.push("✅ Clean ESN");
+  if (cleanEsn) details.push("✅ Clean ESN");
   if (imeiUnverified) details.push("⚠️ IMEI not verified by carrier — sold as-is");
-  if (bm) details.push(`✅ Battery Health: ${bm[1]}%`);
+  if (battery) details.push(`✅ Battery Health: ${battery}%${cycles ? ` (${cycles} cycles)` : ""}`);
+  if (battery && needsService) details.push("⚠️ Battery is due for service");
   details.push("✅ Smooth and fast performance");
 
   const features = LISTING_FEATURES[model.toLowerCase()];
@@ -1285,6 +1341,54 @@ function BulkAddModal({ onCancel, onConfirm }){
   );
 }
 
+function parseEditRows(text){
+  return text.split(/\r?\n/).map(l => l.replace(/\s+$/, "")).filter(l => l.length > 0)
+    .filter(l => !/^sku\t/i.test(l))
+    .map(l => {
+      const p = l.split("\t");
+      return { sku: (p[0] || "").trim(), brand: (p[1] || "").trim(), model: (p[2] || "").trim(), storage: (p[3] || "").trim(),
+               color: (p[4] || "").trim(), carrier: (p[5] || "").trim(), condition: (p[6] || "").trim(), notes: (p[7] || "").trim(), hasTabs: l.includes("\t") };
+    });
+}
+
+function BulkEditDetailsModal({ onCancel, onConfirm }){
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const parsed = React.useMemo(() => parseEditRows(text), [text]);
+  const valid = parsed.filter(r => r.sku && r.hasTabs);
+  const handleConfirm = async () => {
+    setBusy(true);
+    const res = await onConfirm(valid);
+    setBusy(false);
+    setResult(res);
+  };
+  return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
+    e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "92%", maxWidth: 460, maxHeight: "86vh", overflowY: "auto" } },
+      e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 6 } }, "Bulk edit details"),
+      e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 } },
+        "Paste tab-separated rows: SKU, Brand, Model, Storage, Color, Carrier, Condition, Notes. For each SKU (in stock or already sold) those seven fields are replaced with what you paste, and a blank cell clears that field. SKU, cost, IMEI, rack, prices, and batch are never touched."
+      ),
+      e("textarea", { value: text, onChange: ev => setText(ev.target.value), rows: 8,
+        placeholder: "SKU\tBrand\tModel\tStorage\tColor\tCarrier\tCondition\tNotes\n40407569\tApple\tiPhone 15 Pro Max\t256GB\tBlack Titanium\tUnlocked\tGood – Minor Scratches\tBattery 88% · 446 cycles · Scuffs on screen",
+        style: { width: "100%", fontSize: 12, fontFamily: "monospace", marginBottom: 8, padding: 8 } }),
+      text.length > 0 && e("div", { style: { fontSize: 12, marginBottom: 10, color: parsed.length - valid.length > 0 ? "#a3771f" : "var(--text-secondary)" } },
+        `${valid.length} SKU${valid.length === 1 ? "" : "s"} ready to update` + (parsed.length - valid.length > 0 ? ` · ${parsed.length - valid.length} skipped (rows must be tab-separated)` : "")),
+      result && e("div", { style: { fontSize: 12, marginBottom: 10, padding: 8, borderRadius: 8, background: "var(--surface-1)" } },
+        e("div", { style: { fontWeight: 600, marginBottom: 4 } }, `Updated ${result.updated} SKU${result.updated === 1 ? "" : "s"}`),
+        result.skipped.length > 0 && e("div", null, `Skipped ${result.skipped.length}:`,
+          result.skipped.slice(0, 10).map((r, idx) => e("div", { key: idx, style: { color: "var(--text-secondary)" } }, `${r.sku || "(no SKU)"} — ${r.reason}`)))
+      ),
+      e("div", { style: { display: "flex", gap: 8 } },
+        e("button", { onClick: onCancel, style: { flex: 1 } }, result ? "Close" : "Cancel"),
+        !result && e("button", { onClick: handleConfirm, disabled: valid.length === 0 || busy,
+          style: { flex: 1, borderColor: "var(--border-accent)", color: valid.length > 0 && !busy ? "var(--text-accent)" : undefined } },
+          busy ? "Updating…" : `Update ${valid.length || ""} SKU${valid.length === 1 ? "" : "s"}`)
+      )
+    )
+  );
+}
+
 function parseTagRows(text){
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
   return lines
@@ -1311,7 +1415,7 @@ function BulkTagModal({ onCancel, onConfirm }){
     e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "92%", maxWidth: 420, maxHeight: "86vh", overflowY: "auto" } },
       e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 6 } }, "Assign batch / vendor"),
       e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 } },
-        "Paste SKU, batch (invoice #), and vendor — one item per line, tab or comma separated. Only tags items already in stock; nothing else changes."
+        "Paste SKU, batch (invoice #), and vendor — one item per line, tab or comma separated. Tags items in stock and items already sold (so your reports fill in); nothing else changes."
       ),
       e("textarea", { value: text, onChange: ev => setText(ev.target.value), placeholder: "SKU\tBatch\tVendor\n40407569\tNPS #132597\tNPS Auctions", rows: 8,
         style: { width: "100%", fontSize: 12, fontFamily: "monospace", marginBottom: 8, padding: 8 } }),
