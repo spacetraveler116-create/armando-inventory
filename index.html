@@ -148,6 +148,7 @@ function App(){
   const [bulkPriceModalOpen, setBulkPriceModalOpen] = useState(false);
   const [bulkTagModalOpen, setBulkTagModalOpen] = useState(false);
   const [bulkEditModalOpen, setBulkEditModalOpen] = useState(false);
+  const [bulkFieldModalOpen, setBulkFieldModalOpen] = useState(false);
   const [detailSku, setDetailSku] = useState(null);
   const [editSku, setEditSku] = useState(null);
   const [confirmDeleteSku, setConfirmDeleteSku] = useState(null);
@@ -243,6 +244,26 @@ function App(){
       return { added: 0, skipped: parsedItems.map(i => ({ ...i, reason: "save failed" })) };
     }
   }, [findItemBySku, showToast]);
+
+  const handleBulkSetField = useCallback(async (field, rows) => {
+    const plan = planFieldUpdates(field, rows, findItemBySku, sales);
+    const applied = plan.inStock + plan.soldCount;
+    if (applied === 0) {
+      showToast(plan.skipped.length ? `Nothing updated — ${plan.skipped.length} skipped` : "No valid rows to update");
+      return { updated: 0, skipped: plan.skipped };
+    }
+    const updates = { ...plan.updates };
+    const logId = uid();
+    updates["changelog/" + logId] = { id: logId, ts: Date.now(), type: "edit", sku: "(bulk)", detail: `Set ${field} on ${plan.inStock} in-stock and ${plan.soldCount} sold items` };
+    try {
+      await db.ref().update(updates);
+      showToast(`Set ${field} on ${plan.inStock} in stock${plan.soldCount ? ` + ${plan.soldCount} sold` : ""}${plan.skipped.length ? `, skipped ${plan.skipped.length}` : ""}`);
+      return { updated: plan.inStock + plan.soldCount, skipped: plan.skipped };
+    } catch (err) {
+      showToast("Failed to save — check connection");
+      return { updated: 0, skipped: rows.map(r => ({ ...r, reason: "save failed" })) };
+    }
+  }, [findItemBySku, sales, showToast]);
 
   const handleBulkEditDetails = useCallback(async (rows) => {
     const FIELDS = ["brand", "model", "storage", "color", "carrier", "condition", "notes"];
@@ -604,7 +625,9 @@ function App(){
     ),
     e("div", { style: { display: "flex", gap: 8, marginBottom: 12 } },
       e("button", { onClick: () => setBulkEditModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13 } },
-        e("i", { className: "ti ti-edit" }), "Bulk edit details")
+        e("i", { className: "ti ti-edit" }), "Bulk edit details"),
+      e("button", { onClick: () => setBulkFieldModalOpen(true), style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13 } },
+        e("i", { className: "ti ti-list-details" }), "Bulk set one field")
     ),
 
     tab === "stock" && e("div", null,
@@ -686,6 +709,11 @@ function App(){
     bulkAddModalOpen && e(BulkAddModal, {
       onCancel: () => setBulkAddModalOpen(false),
       onConfirm: async (parsedItems) => { const result = await handleBulkAddItems(parsedItems); if (result.added > 0 && result.skipped.length === 0) setBulkAddModalOpen(false); return result; }
+    }),
+
+    bulkFieldModalOpen && e(BulkFieldModal, {
+      onCancel: () => setBulkFieldModalOpen(false),
+      onConfirm: async (field, rows) => { const result = await handleBulkSetField(field, rows); if (result.updated > 0 && result.skipped.length === 0) setBulkFieldModalOpen(false); return result; }
     }),
 
     bulkEditModalOpen && e(BulkEditDetailsModal, {
@@ -1336,6 +1364,75 @@ function BulkAddModal({ onCancel, onConfirm }){
           disabled: validCount === 0 || busy,
           style: { flex: 1, borderColor: "var(--border-accent)", color: validCount > 0 && !busy ? "var(--text-accent)" : undefined }
         }, busy ? "Adding…" : `Add ${validCount || ""} item${validCount === 1 ? "" : "s"}`)
+      )
+    )
+  );
+}
+
+const FIELD_CHOICES = [
+  ["condition", "Condition"], ["model", "Model"], ["notes", "Notes"], ["color", "Color"], ["carrier", "Carrier"],
+  ["storage", "Storage"], ["brand", "Brand"], ["imei", "IMEI"], ["rack", "Rack"], ["suggestedPrice", "Suggested price"]
+];
+
+function planFieldUpdates(field, rows, findItem, sales){
+  const updates = {};
+  const skipped = [];
+  let inStock = 0, soldCount = 0;
+  rows.forEach(row => {
+    const value = (row.value || "").trim();
+    if (!row.sku) { skipped.push({ ...row, reason: "missing SKU" }); return; }
+    if (!value) { skipped.push({ ...row, reason: "blank value (nothing changed)" }); return; }
+    if (field === "condition" && !CONDITIONS.includes(value)) { skipped.push({ ...row, reason: "not a standard condition" }); return; }
+    if (field === "suggestedPrice" && (isNaN(Number(value)) || Number(value) <= 0)) { skipped.push({ ...row, reason: "price must be a number" }); return; }
+    const item = findItem(row.sku);
+    const sold = field === "suggestedPrice" ? [] : (sales || []).filter(sl => String(sl.sku) === String(row.sku));
+    if (!item && sold.length === 0) { skipped.push({ ...row, reason: "SKU not in stock" + (field === "suggestedPrice" ? "" : " or sales") }); return; }
+    const out = field === "suggestedPrice" ? Number(value) : value;
+    if (item) { updates["items/" + item.id + "/" + field] = out; inStock += 1; }
+    sold.forEach(sl => { updates["sales/" + sl.id + "/" + field] = out; soldCount += 1; });
+  });
+  return { updates, skipped, inStock, soldCount };
+}
+
+function BulkFieldModal({ onCancel, onConfirm }){
+  const [field, setField] = useState("condition");
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const rows = React.useMemo(() => text.split(/\r?\n/).map(l => l.replace(/\s+$/, "")).filter(l => l && !/^sku\t/i.test(l)).map(l => {
+    const i = l.indexOf("\t");
+    return i < 0 ? { sku: l.trim(), value: "" } : { sku: l.slice(0, i).trim(), value: l.slice(i + 1).trim() };
+  }), [text]);
+  const label = (FIELD_CHOICES.find(f => f[0] === field) || [0, field])[1];
+  const handleConfirm = async () => {
+    setBusy(true);
+    const res = await onConfirm(field, rows);
+    setBusy(false);
+    setResult(res);
+  };
+  return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
+    e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "92%", maxWidth: 420, maxHeight: "86vh", overflowY: "auto" } },
+      e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 6 } }, "Bulk set one field"),
+      e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 10 } },
+        "Pick a field, then paste SKU and the new value, tab separated, one item per line. Only that field changes, on items in stock and already sold (price: in stock only). Blank values are skipped, never cleared."
+      ),
+      e("select", { value: field, onChange: ev => { setField(ev.target.value); setResult(null); }, style: { width: "100%", marginBottom: 8 } },
+        FIELD_CHOICES.map(([k, l]) => e("option", { key: k, value: k }, l))),
+      e("textarea", { value: text, onChange: ev => setText(ev.target.value), rows: 7,
+        placeholder: "SKU\t" + label + "\n40263011\t" + (field === "condition" ? "Good – Used" : field === "suggestedPrice" ? "480" : "…"),
+        style: { width: "100%", fontSize: 12, fontFamily: "monospace", marginBottom: 8, padding: 8 } }),
+      text.length > 0 && e("div", { style: { fontSize: 12, marginBottom: 10, color: "var(--text-secondary)" } },
+        `${rows.filter(r => r.sku && r.value).length} row${rows.length === 1 ? "" : "s"} ready to set ${label.toLowerCase()}` + (field === "condition" ? " · allowed: " + CONDITIONS.join(", ") : "")),
+      result && e("div", { style: { fontSize: 12, marginBottom: 10, padding: 8, borderRadius: 8, background: "var(--surface-1)" } },
+        e("div", { style: { fontWeight: 600, marginBottom: 4 } }, `Updated ${result.updated} SKU${result.updated === 1 ? "" : "s"}`),
+        result.skipped.length > 0 && e("div", null, `Skipped ${result.skipped.length}:`,
+          result.skipped.slice(0, 10).map((r, idx) => e("div", { key: idx, style: { color: "var(--text-secondary)" } }, `${r.sku || "(no SKU)"} — ${r.reason}`)))
+      ),
+      e("div", { style: { display: "flex", gap: 8 } },
+        e("button", { onClick: onCancel, style: { flex: 1 } }, result ? "Close" : "Cancel"),
+        !result && e("button", { onClick: handleConfirm, disabled: rows.filter(r => r.sku && r.value).length === 0 || busy,
+          style: { flex: 1, borderColor: "var(--border-accent)", color: rows.filter(r => r.sku && r.value).length > 0 && !busy ? "var(--text-accent)" : undefined } },
+          busy ? "Updating…" : "Apply")
       )
     )
   );
