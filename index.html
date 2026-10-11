@@ -441,6 +441,7 @@ function App(){
 
   const copyListing = useCallback(async (item) => {
     if (!item) return;
+    if (isBlacklisted(item)) { showToast("Not copied — this item is flagged BLACKLISTED"); return; }
     const text = buildListing(item);
     try {
       await navigator.clipboard.writeText(text);
@@ -643,7 +644,7 @@ function App(){
               e("div", { style: { minWidth: 0 } },
                 e("div", { style: { fontWeight: 600, fontSize: 14 } }, `${item.brand || ""} ${item.model || ""}`),
                 e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginTop: 2 } }, [item.storage, item.color, item.carrier].filter(Boolean).join(" · ")),
-                e("div", { style: { fontSize: 11, color: "var(--text-muted)", marginTop: 4 } }, `${item.sku} · ${item.rack || "No rack"}${item.batch ? " · " + item.batch : ""}`),
+                e("div", { style: { fontSize: 11, color: "var(--text-muted)", marginTop: 4 } }, `${item.sku} · ${item.rack || "No rack"}${item.batch ? " · " + item.batch : ""}${isBlacklisted(item) ? " · ⛔ BLACKLISTED" : ""}`),
                 isAging && e("div", { style: { fontSize: 11, color: "#a3771f", marginTop: 4, display: "flex", alignItems: "center", gap: 4 } },
                   e("i", { className: "ti ti-clock", style: { fontSize: 12 } }), `${daysInStock} days in stock`)
               ),
@@ -935,6 +936,8 @@ function DailyTab({ sales }){
   );
 }
 
+function isBlacklisted(i){ return /blacklist/i.test(String((i && i.notes) || "")); }
+
 function itemCost(i){ return (Number(i.cost) || 0) + (Number(i.extraCost) || 0); }
 
 const LISTING_FEATURES = {
@@ -1188,9 +1191,12 @@ function SellModal({ item, onCancel, onConfirm }){
   const cost = itemCost(item);
   const feeAmt = Number(fees) || 0;
   const profit = price ? round2(Number(price) - cost - feeAmt) : null;
+  const blocked = isBlacklisted(item);
   return e("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 } },
     e("div", { style: { background: "var(--surface-2)", borderRadius: 12, padding: "1.25rem", width: "90%", maxWidth: 340 } },
       e("div", { style: { fontWeight: 600, fontSize: 15, marginBottom: 4 } }, `${item.brand || ""} ${item.model || ""}`),
+      blocked && e("div", { style: { fontSize: 12.5, background: "#fdecea", border: "1px solid #e6a19b", color: "#8a1f17", borderRadius: 8, padding: "0.5rem 0.65rem", marginBottom: 10 } },
+        "⛔ Flagged BLACKLISTED — don't sell until the carrier confirms the IMEI is clean. Then remove BLACKLISTED from this item's notes (Edit) to sell it."),
       e("div", { style: { fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 } }, `${[item.storage, item.color].filter(Boolean).join(" · ")} · Cost $${cost}${Number(item.extraCost) ? ` (incl. $${item.extraCost} extra)` : ""}`),
       e("label", { style: { fontSize: 13, color: "var(--text-secondary)", display: "block", marginBottom: 4 } }, "Sold price"),
       e("input", { type: "number", inputMode: "decimal", placeholder: "0.00", value: price, onChange: ev => setPrice(ev.target.value), style: { width: "100%", marginBottom: 10 }, autoFocus: true }),
@@ -1203,7 +1209,7 @@ function SellModal({ item, onCancel, onConfirm }){
       profit !== null && !isNaN(profit) && e("div", { style: { fontSize: 13, marginBottom: 12, color: profit >= 0 ? "var(--text-success)" : "var(--text-danger)" } }, `Profit: ${profit >= 0 ? "+" : ""}$${profit}`),
       e("div", { style: { display: "flex", gap: 8 } },
         e("button", { onClick: onCancel, style: { flex: 1 } }, "Cancel"),
-        e("button", { onClick: () => price && onConfirm(price, platform, fees), disabled: !price, style: { flex: 1, borderColor: "var(--border-accent)", color: price ? "var(--text-accent)" : undefined } }, "Confirm sale")
+        e("button", { onClick: () => price && !blocked && onConfirm(price, platform, fees), disabled: !price || blocked, style: { flex: 1, borderColor: "var(--border-accent)", color: price && !blocked ? "var(--text-accent)" : undefined } }, blocked ? "Blocked" : "Confirm sale")
       )
     )
   );
